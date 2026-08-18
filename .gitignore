@@ -3,4 +3,5 @@ node_modules/
 .dev.vars
 .wrangler/
 worker-configuration.d.ts
+!examples/cloudflare-worker/worker-configuration.d.ts
 *.tsbuildinfo

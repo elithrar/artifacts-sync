@@ -1,19 +1,24 @@
+import { z } from "zod";
+
+import { gitOidSchema, gitRefSchema } from "./schemas.js";
 import type { ChangeObservation } from "./types.js";
 
-const ZERO_OID = "0000000000000000000000000000000000000000";
+export const artifactsPushEventSchema = z.object({
+  type: z.literal("cf.artifacts.repo.pushed"),
+  source: z.string().min(1),
+  payload: z.object({
+    ref: gitRefSchema,
+    before: gitOidSchema,
+    after: gitOidSchema,
+    totalCommitsCount: z.number().int().nonnegative(),
+    commitsTruncated: z.boolean(),
+  }),
+});
 
-export interface ArtifactsPushEvent {
-  readonly payload: {
-    readonly ref: string;
-    readonly before: string;
-    readonly after: string;
-    readonly totalCommitsCount: number;
-    readonly commitsTruncated: boolean;
-  };
-}
+export type ArtifactsPushEvent = z.infer<typeof artifactsPushEventSchema>;
 
 export interface ArtifactsPushEvidence {
-  readonly estimatedBytes?: number;
+  readonly estimatedPatchBytes?: number;
   readonly sourceSizeBytes?: number;
   /** Set only when ancestry was independently verified. */
   readonly forced?: boolean;
@@ -23,23 +28,37 @@ export function observeArtifactsPush(
   event: ArtifactsPushEvent,
   evidence: ArtifactsPushEvidence = {},
 ): ChangeObservation {
+  artifactsPushEventSchema.parse(event);
   const payload = event.payload;
+  assertOptionalNonNegativeInteger(evidence.estimatedPatchBytes, "estimatedPatchBytes");
+  assertOptionalNonNegativeInteger(evidence.sourceSizeBytes, "sourceSizeBytes");
   return {
     refs: [
       {
         ref: payload.ref,
-        ...(payload.before === ZERO_OID ? {} : { before: payload.before }),
-        ...(payload.after === ZERO_OID ? {} : { after: payload.after }),
+        before: isZeroOid(payload.before) ? null : payload.before,
+        after: isZeroOid(payload.after) ? null : payload.after,
+        destination: { status: "unchecked" },
         commitCount: payload.totalCommitsCount,
-        ...(evidence.estimatedBytes === undefined
-          ? {}
-          : { estimatedBytes: evidence.estimatedBytes }),
-        ...(evidence.forced === undefined ? {} : { forced: evidence.forced }),
+        estimatedPatchBytes: evidence.estimatedPatchBytes ?? null,
+        forced: evidence.forced ?? null,
       },
     ],
-    ...(payload.commitsTruncated ? { truncated: true } : {}),
-    ...(evidence.sourceSizeBytes === undefined
-      ? {}
-      : { sourceSizeBytes: evidence.sourceSizeBytes }),
+    complete: !payload.commitsTruncated,
+    sourceSizeBytes: evidence.sourceSizeBytes ?? null,
   };
+}
+
+function assertOptionalNonNegativeInteger(value: number | undefined, name: string): void {
+  if (value !== undefined) assertNonNegativeInteger(value, name);
+}
+
+function assertNonNegativeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+}
+
+function isZeroOid(oid: string): boolean {
+  return /^0+$/.test(oid);
 }

@@ -5,7 +5,7 @@ This example wires both push directions into one Workflow:
 - GitHub `push` webhook → Workflow → Cloudflare Artifacts
 - `cf.artifacts.repo.pushed` → Workflow → GitHub
 
-The Workflow routes each ordered repository pair to one `SyncCoordinator` Durable Object. That object owns the persistent Computer Workspace and its lazily started native-Git container.
+The Workflow routes both directions of the configured repository pair to one `SyncCoordinator` Durable Object. That object owns the persistent Computer Workspace and its lazily started native-Git container.
 
 ## Configure
 
@@ -28,6 +28,8 @@ The Workflow routes each ordered repository pair to one `SyncCoordinator` Durabl
 
 The checked-in Artifacts event trigger is account-side configuration. Limit its filter to the configured namespace and repository before deployment.
 
+Configure the GitHub webhook to send `application/json`. The Worker accepts only `push` events, requires `X-GitHub-Delivery`, verifies `X-Hub-Signature-256`, validates the payload schema, and rejects bodies above 10 MiB before starting a Workflow.
+
 ## Security
 
-Use a GitHub App installation token or fine-grained token limited to the configured repository. The Artifacts resolver mints a short-lived read or write token for each sync. Neither credential is included in a returned plan or native-Git command string.
+For this static-secret example, use a fine-grained token limited to the configured repository. GitHub App installation tokens expire, so production App integrations should mint them on demand through the resolver's `githubTokenFor` callback. The Artifacts resolver mints a short-lived read or write token for each sync. Git credentials use HTTP Basic authentication and are passed through request headers or the container environment; they are never included in a returned plan or command string.

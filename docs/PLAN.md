@@ -27,22 +27,22 @@ The initial workspace limits are:
 | ---------------------------- | --------------: |
 | Changed refs                 |               3 |
 | New commits                  |              50 |
-| Estimated Git patch bytes    |          16 MiB |
+| Complete UTF-8 patch bytes   |          16 MiB |
 | Cold-cache source repository |          16 MiB |
 
-The workspace strategy also requires a fast-forward update, complete inspection data, and either a warm pair cache or a source repository below the cold-cache limit. Any force push, mirror, truncation, binary/unknown patch, or unknown size selects the container.
+The workspace strategy also requires a fast-forward update, complete inspection data, and either every source base object in the ordered pair cache or a source repository below the cold-cache limit. Cache-directory existence alone is not warm evidence. Ref deletions do not need source objects. Any force push, mirror, truncation, binary/unknown patch, or unknown size selects the container.
 
-GitHub push inspection uses the Compare API. It accepts a patch estimate only when every nondeleted file includes a complete patch. Cloudflare Artifacts push events currently expose commit counts but no byte estimate, so Artifacts-originated changes default to the container unless the caller supplies a trusted estimate.
+GitHub push inspection uses the Compare API. It accepts a patch estimate only when every nondeleted file includes a complete patch and bounds the streamed response even when `Content-Length` is absent or wrong. Patch bytes are a routing signal, not Git pack bytes. Cloudflare Artifacts push events currently expose commit counts but no byte estimate, so Artifacts-originated changes default to the container unless the caller supplies trusted `estimatedPatchBytes` evidence.
 
 ## Runtime topology
 
 1. A GitHub webhook Worker or `cf.artifacts.repo.pushed` event starts a Workflow.
-2. A Workflow step normalizes and inspects the push.
-3. A per-repository-pair Durable Object serializes execution and owns the Computer Workspace.
-4. The planner selects no-op, Workspace Git, or Computer container Git.
-5. A final Workflow step verifies the destination ref.
+2. The webhook boundary validates the payload; GitHub pushes are inspected in the pair coordinator.
+3. A Durable Object for the configured pair serializes both directions and owns the Computer Workspace.
+4. The client reads destination refs without overwriting source push history.
+5. The planner selects no-op, Workspace Git, or Computer container Git, then executes the plan.
 
-One Durable Object per ordered repository pair avoids cross-repository contention while preserving a small-path Git cache.
+One Durable Object per configured repository pair avoids cross-repository contention and prevents opposite directions from executing concurrently. Computer keeps a separate ordered cache for each direction inside that coordinator.
 
 ## API
 
@@ -59,6 +59,8 @@ const result = await client.sync(from, to, { change });
 
 `strategy: "workspace" | "container"` is available as an explicit override. Overrides remain visible in the returned plan.
 
+The third argument is required: pass a push `change` observation or `{ mode: "mirror" }`. The type contract prevents an omitted option from silently becoming a destructive mirror. The Workspace override rejects mirrors and empty ref sets because that executor cannot implement them.
+
 ## Follow-ups before production
 
 - Run repository-size and pack-memory benchmarks against real workloads.
@@ -66,3 +68,4 @@ const result = await client.sync(from, to, { change });
 - Add cache eviction or rebuild policy because Computer's isomorphic-git pack cache is unbounded and has no `git gc` support.
 - Pin and test Computer upgrades—the dependency is preview-only.
 - Define conflict policy for simultaneous human pushes. The default remains fast-forward only; force reconciliation requires `mode: "mirror"` or an explicit container override.
+- Add post-push destination verification when the upstream APIs expose a cheap, reliable consistency signal.

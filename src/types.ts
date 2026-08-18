@@ -34,40 +34,61 @@ export interface RepositoryResolver {
   resolve(repository: Repository, access: RepositoryAccess): Promise<ResolvedRepository>;
 }
 
+export type DestinationRefState =
+  | { readonly status: "unchecked" }
+  | { readonly status: "missing" }
+  | { readonly status: "present"; readonly oid: string };
+
 export interface RefChange {
   readonly ref: string;
-  readonly before?: string;
-  readonly after?: string;
-  readonly commitCount?: number;
-  readonly estimatedBytes?: number;
-  readonly forced?: boolean;
+  /** Source object before the push, or null when the ref was created. */
+  readonly before: string | null;
+  /** Source object after the push, or null when the ref was deleted. */
+  readonly after: string | null;
+  /** Current destination state. Filled by SyncClient before planning. */
+  readonly destination: DestinationRefState;
+  readonly commitCount: number | null;
+  /** UTF-8 bytes in complete GitHub patches; not an estimate of Git pack size. */
+  readonly estimatedPatchBytes: number | null;
+  /** Null means ancestry was not independently established. */
+  readonly forced: boolean | null;
 }
 
 export interface ChangeObservation {
   readonly refs: readonly RefChange[];
-  readonly truncated?: boolean;
-  readonly sourceSizeBytes?: number;
+  readonly complete: boolean;
+  readonly sourceSizeBytes: number | null;
 }
 
 export interface SyncLimits {
   readonly refs: number;
   readonly commits: number;
-  readonly bytes: number;
+  readonly patchBytes: number;
   readonly coldSourceBytes: number;
 }
 
-export interface SyncOptions {
-  readonly change?: ChangeObservation;
+interface SyncBehaviorOptions {
   readonly limits?: Partial<SyncLimits>;
-  readonly mode?: SyncMode;
   readonly strategy?: SyncStrategy;
 }
 
+export interface PushSyncOptions extends SyncBehaviorOptions {
+  readonly mode?: "push";
+  readonly change: ChangeObservation;
+}
+
+export interface MirrorSyncOptions extends SyncBehaviorOptions {
+  readonly mode: "mirror";
+  readonly change?: never;
+}
+
+export type SyncOptions = PushSyncOptions | MirrorSyncOptions;
+
 export interface SyncEstimate {
-  readonly refs?: number;
-  readonly commits?: number;
-  readonly bytes?: number;
-  readonly sourceBytes?: number;
+  readonly refs: number | null;
+  readonly commits: number | null;
+  readonly patchBytes: number | null;
+  readonly sourceBytes: number | null;
   readonly cacheWarm: boolean;
 }
 
@@ -89,25 +110,33 @@ export interface ExecutionContext {
 
 export interface ExecutorResult {
   readonly refs: readonly string[];
-  readonly detail?: Readonly<Record<string, unknown>>;
+  readonly detail?: Readonly<Record<string, string | number | boolean | null>>;
 }
 
 export interface SyncExecutor {
-  hasCache?(pairKey: string): Promise<boolean>;
+  /** True only when every required source base object is present locally. */
+  hasCache?(pairKey: string, refs: readonly RefChange[]): Promise<boolean>;
   execute(plan: SyncPlan, context: ExecutionContext): Promise<ExecutorResult>;
 }
 
 export interface RefReader {
-  read(repository: ResolvedRepository, ref: string): Promise<string | undefined>;
+  read(repository: ResolvedRepository, ref: string): Promise<string | null>;
 }
 
-export interface SyncResult {
+export interface SkippedSyncResult {
   readonly plan: SyncPlan;
-  readonly executed: boolean;
-  readonly result?: ExecutorResult;
+  readonly executed: false;
 }
+
+export interface ExecutedSyncResult {
+  readonly plan: SyncPlan;
+  readonly executed: true;
+  readonly result: ExecutorResult;
+}
+
+export type SyncResult = SkippedSyncResult | ExecutedSyncResult;
 
 export interface SyncClient {
-  plan(from: Repository, to: Repository, options?: SyncOptions): Promise<SyncPlan>;
-  sync(from: Repository, to: Repository, options?: SyncOptions): Promise<SyncResult>;
+  plan(from: Repository, to: Repository, options: SyncOptions): Promise<SyncPlan>;
+  sync(from: Repository, to: Repository, options: SyncOptions): Promise<SyncResult>;
 }

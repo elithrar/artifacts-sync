@@ -31,6 +31,16 @@ await client.sync(github("elithrar/project"), artifacts("project"), { change });
 
 The automatic planner uses the Computer Workspace only for small, fully measured fast-forward updates. Mirrors, force pushes, binary or truncated comparisons, cold substantial repositories, and unknown changes run through native Git in a Computer container.
 
+Full reconciliation is deliberately explicit because `git push --mirror` can force-update and delete destination refs:
+
+```ts
+await client.sync(github("elithrar/project"), artifacts("project"), {
+  mode: "mirror",
+});
+```
+
+`estimatedPatchBytes` measures complete UTF-8 patches returned by GitHub's Compare API. It is a conservative routing signal, not an estimate of Git pack transfer size. Source and destination ref state remain separate in every plan, and `executed` discriminates `SyncResult` before `result` can be accessed.
+
 See [the design plan](./docs/PLAN.md) and [the Cloudflare Worker example](./examples/cloudflare-worker/README.md).
 
 ## Status

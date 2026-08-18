@@ -1,6 +1,8 @@
+import { gitOidSchema, gitRefSchema } from "./schemas.js";
 import type {
   ChangeObservation,
   RefChange,
+  SyncEstimate,
   SyncLimits,
   SyncMode,
   SyncPlan,
@@ -10,7 +12,7 @@ import type {
 export const DEFAULT_SYNC_LIMITS: SyncLimits = Object.freeze({
   refs: 3,
   commits: 50,
-  bytes: 16 * 1024 * 1024,
+  patchBytes: 16 * 1024 * 1024,
   coldSourceBytes: 16 * 1024 * 1024,
 });
 
@@ -23,60 +25,90 @@ export interface PlanSyncInput {
 }
 
 export function planSync(input: PlanSyncInput): SyncPlan {
-  const limits = { ...DEFAULT_SYNC_LIMITS, ...input.limits };
+  const limits: SyncLimits = { ...DEFAULT_SYNC_LIMITS, ...input.limits };
+  validateLimits(limits);
+  if (input.change !== undefined) validateObservation(input.change);
+
   const refs = input.change?.refs ?? [];
+  if (input.mode === "push" && refs.length === 0) {
+    throw new Error("Push sync requires at least one observed ref change");
+  }
   const estimate = estimateChange(input.change, input.cacheWarm);
-  const base = {
-    mode: input.mode,
-    refs,
-    estimate,
-    limits,
-  } as const;
 
   if (input.mode === "push" && refs.length > 0 && refs.every(isNoop)) {
-    return {
-      ...base,
-      strategy: "noop",
-      reason: "Destination refs already match the requested objects",
-      overridden: false,
-    };
+    return createPlan(
+      input.mode,
+      refs,
+      estimate,
+      limits,
+      "noop",
+      "Destination refs already match the requested objects",
+      false,
+    );
   }
 
   if (input.strategy !== "auto") {
-    return {
-      ...base,
-      strategy: input.strategy,
-      reason: `Strategy explicitly set to ${input.strategy}`,
-      overridden: true,
-    };
+    validateStrategyCapability(input.strategy, input.mode, refs);
+    return createPlan(
+      input.mode,
+      refs,
+      estimate,
+      limits,
+      input.strategy,
+      `Strategy explicitly set to ${input.strategy}`,
+      true,
+    );
   }
 
   const largeReason = automaticContainerReason(input, limits);
-  if (largeReason !== undefined) {
-    return {
-      ...base,
-      strategy: "container",
-      reason: largeReason,
-      overridden: false,
-    };
+  if (largeReason !== null) {
+    return createPlan(input.mode, refs, estimate, limits, "container", largeReason, false);
   }
 
-  return {
-    ...base,
-    strategy: "workspace",
-    reason: input.cacheWarm
+  return createPlan(
+    input.mode,
+    refs,
+    estimate,
+    limits,
+    "workspace",
+    input.cacheWarm
       ? "Bounded fast-forward change with a warm Workspace cache"
       : "Bounded fast-forward change in a small source repository",
-    overridden: false,
-  };
+    false,
+  );
 }
 
-function automaticContainerReason(input: PlanSyncInput, limits: SyncLimits): string | undefined {
+function createPlan(
+  mode: SyncMode,
+  refs: readonly RefChange[],
+  estimate: SyncEstimate,
+  limits: SyncLimits,
+  strategy: SyncPlan["strategy"],
+  reason: string,
+  overridden: boolean,
+): SyncPlan {
+  return { mode, refs, estimate, limits, strategy, reason, overridden };
+}
+
+function validateStrategyCapability(
+  strategy: Exclude<SyncStrategy, "auto">,
+  mode: SyncMode,
+  refs: readonly RefChange[],
+): void {
+  if (strategy === "workspace" && mode === "mirror") {
+    throw new Error("The workspace strategy cannot mirror repositories; use container");
+  }
+  if (strategy === "workspace" && refs.length === 0) {
+    throw new Error("The workspace strategy requires at least one observed ref change");
+  }
+}
+
+function automaticContainerReason(input: PlanSyncInput, limits: SyncLimits): string | null {
   if (input.mode === "mirror") return "Full mirrors require native Git";
   if (input.change === undefined || input.change.refs.length === 0) {
     return "No bounded push observation was supplied";
   }
-  if (input.change.truncated) return "Push inspection was truncated or incomplete";
+  if (!input.change.complete) return "Push inspection was truncated or incomplete";
   if (input.change.refs.length > limits.refs) {
     return `Changed ref count exceeds the workspace limit of ${limits.refs}`;
   }
@@ -85,57 +117,103 @@ function automaticContainerReason(input: PlanSyncInput, limits: SyncLimits): str
   }
 
   const commits = sumKnown(input.change.refs, "commitCount");
-  if (commits === undefined) return "Commit count is unknown";
+  if (commits === null) return "Commit count is unknown";
   if (commits > limits.commits) {
     return `Commit count exceeds the workspace limit of ${limits.commits}`;
   }
 
-  const bytes = sumKnown(input.change.refs, "estimatedBytes");
-  if (bytes === undefined) return "Transfer size is unknown";
-  if (bytes > limits.bytes) {
-    return `Estimated change exceeds the workspace limit of ${limits.bytes} bytes`;
+  const patchBytes = sumKnown(input.change.refs, "estimatedPatchBytes");
+  if (patchBytes === null) return "Patch byte estimate is unknown";
+  if (patchBytes > limits.patchBytes) {
+    return `Estimated patch bytes exceed the workspace limit of ${limits.patchBytes}`;
   }
 
-  if (!input.cacheWarm) {
-    if (input.change.sourceSizeBytes === undefined) {
+  const needsSourceObjects = input.change.refs.some((change) => change.after !== null);
+  if (!input.cacheWarm && needsSourceObjects) {
+    if (input.change.sourceSizeBytes === null) {
       return "Cold Workspace cache and source repository size is unknown";
     }
     if (input.change.sourceSizeBytes > limits.coldSourceBytes) {
       return `Cold source repository exceeds the workspace limit of ${limits.coldSourceBytes} bytes`;
     }
   }
-  return undefined;
+  return null;
 }
 
-function estimateChange(
-  change: ChangeObservation | undefined,
-  cacheWarm: boolean,
-): SyncPlan["estimate"] {
-  if (change === undefined) return { cacheWarm };
-  const commits = sumKnown(change.refs, "commitCount");
-  const bytes = sumKnown(change.refs, "estimatedBytes");
+function estimateChange(change: ChangeObservation | undefined, cacheWarm: boolean): SyncEstimate {
+  if (change === undefined) {
+    return {
+      refs: null,
+      commits: null,
+      patchBytes: null,
+      sourceBytes: null,
+      cacheWarm,
+    };
+  }
   return {
     refs: change.refs.length,
+    commits: sumKnown(change.refs, "commitCount"),
+    patchBytes: sumKnown(change.refs, "estimatedPatchBytes"),
+    sourceBytes: change.sourceSizeBytes,
     cacheWarm,
-    ...(commits === undefined ? {} : { commits }),
-    ...(bytes === undefined ? {} : { bytes }),
-    ...(change.sourceSizeBytes === undefined ? {} : { sourceBytes: change.sourceSizeBytes }),
   };
 }
 
 function sumKnown(
   refs: readonly RefChange[],
-  key: "commitCount" | "estimatedBytes",
-): number | undefined {
+  key: "commitCount" | "estimatedPatchBytes",
+): number | null {
   let total = 0;
   for (const ref of refs) {
     const value = ref[key];
-    if (value === undefined) return undefined;
+    if (value === null) return null;
     total += value;
   }
   return total;
 }
 
 function isNoop(change: RefChange): boolean {
-  return change.before === change.after;
+  if (change.after === null) return change.destination.status === "missing";
+  return (
+    change.destination.status === "present" &&
+    change.destination.oid.toLowerCase() === change.after.toLowerCase()
+  );
+}
+
+function validateLimits(limits: SyncLimits): void {
+  validatePositiveInteger(limits.refs, "limits.refs");
+  validatePositiveInteger(limits.commits, "limits.commits");
+  validatePositiveInteger(limits.patchBytes, "limits.patchBytes");
+  validatePositiveInteger(limits.coldSourceBytes, "limits.coldSourceBytes");
+}
+
+function validateObservation(observation: ChangeObservation): void {
+  validateOptionalNonNegativeInteger(observation.sourceSizeBytes, "change.sourceSizeBytes");
+  const uniqueRefs = new Set<string>();
+  for (const change of observation.refs) {
+    gitRefSchema.parse(change.ref);
+    if (uniqueRefs.has(change.ref)) throw new Error(`Duplicate ref change: ${change.ref}`);
+    uniqueRefs.add(change.ref);
+    validateOptionalOid(change.before);
+    validateOptionalOid(change.after);
+    if (change.destination.status === "present") gitOidSchema.parse(change.destination.oid);
+    validateOptionalNonNegativeInteger(change.commitCount, "change.commitCount");
+    validateOptionalNonNegativeInteger(change.estimatedPatchBytes, "change.estimatedPatchBytes");
+  }
+}
+
+function validateOptionalOid(value: string | null): void {
+  if (value !== null) gitOidSchema.parse(value);
+}
+
+function validateOptionalNonNegativeInteger(value: number | null, name: string): void {
+  if (value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+    throw new RangeError(`${name} must be null or a non-negative safe integer`);
+  }
+}
+
+function validatePositiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer`);
+  }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { inspectGitHubPush, type GitHubPushPayload } from "../src/github.js";
+import { inspectGitHubPush } from "../src/github.js";
+import type { GitHubPushPayload } from "../src/schemas.js";
 
 const payload: GitHubPushPayload = {
   ref: "refs/heads/main",
@@ -26,17 +27,23 @@ describe("inspectGitHubPush", () => {
         ],
       }),
     );
-    const observation = await inspectGitHubPush(payload, { fetch: fetcher });
-    expect(observation.truncated).toBeUndefined();
+    const observation = await inspectGitHubPush(payload, { fetch: fetcher, token: "secret" });
+
+    expect(observation.complete).toBe(true);
     expect(observation.refs[0]).toMatchObject({
+      before: payload.before,
+      after: payload.after,
+      destination: { status: "unchecked" },
       commitCount: 1,
       forced: false,
     });
-    expect(observation.refs[0]?.estimatedBytes).toBeGreaterThan(0);
+    expect(observation.refs[0]?.estimatedPatchBytes).toBeGreaterThan(0);
     expect(observation.sourceSizeBytes).toBe(12 * 1024);
+    const requestHeaders = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
+    expect(requestHeaders.get("authorization")).toBe("Bearer secret");
   });
 
-  it("marks a binary comparison as incomplete", async () => {
+  it("marks a comparison without complete patches as incomplete", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
       Response.json({
         total_commits: 1,
@@ -44,8 +51,20 @@ describe("inspectGitHubPush", () => {
       }),
     );
     const observation = await inspectGitHubPush(payload, { fetch: fetcher });
-    expect(observation.truncated).toBe(true);
-    expect(observation.refs[0]?.estimatedBytes).toBeUndefined();
+
+    expect(observation.complete).toBe(false);
+    expect(observation.refs[0]?.estimatedPatchBytes).toBeNull();
+  });
+
+  it("bounds the streamed response even without Content-Length", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response("12345"));
+    const observation = await inspectGitHubPush(payload, {
+      fetch: fetcher,
+      maxResponseBytes: 4,
+    });
+
+    expect(observation.complete).toBe(false);
+    expect(observation.refs[0]?.estimatedPatchBytes).toBeNull();
   });
 
   it("does not call compare for a deleted ref", async () => {
@@ -54,8 +73,26 @@ describe("inspectGitHubPush", () => {
       { ...payload, after: "0".repeat(40), deleted: true },
       { fetch: fetcher },
     );
+
     expect(fetcher).not.toHaveBeenCalled();
-    expect(observation.refs[0]?.after).toBeUndefined();
-    expect(observation.refs[0]).toMatchObject({ commitCount: 0, estimatedBytes: 0 });
+    expect(observation.complete).toBe(true);
+    expect(observation.refs[0]).toMatchObject({
+      after: null,
+      commitCount: 0,
+      estimatedPatchBytes: 0,
+    });
+  });
+
+  it("rejects malformed compare responses", async () => {
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(Response.json({ total_commits: "one", files: [] }));
+    await expect(inspectGitHubPush(payload, { fetch: fetcher })).rejects.toThrow();
+  });
+
+  it("validates its response byte limit", async () => {
+    await expect(inspectGitHubPush(payload, { maxResponseBytes: 0 })).rejects.toThrow(
+      "maxResponseBytes must be a positive safe integer",
+    );
   });
 });

@@ -1,76 +1,105 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { createSyncClient } from "../src/sync.js";
-import type { RepositoryResolver, ResolvedRepository, SyncExecutor } from "../src/types.js";
+import type {
+  ChangeObservation,
+  RepositoryResolver,
+  ResolvedRepository,
+  SyncExecutor,
+} from "../src/types.js";
 
 const source: ResolvedRepository = {
   identity: "github:elithrar/source",
   url: "https://github.com/elithrar/source.git",
-  authorization: "Bearer source-secret",
+  authorization: "Basic source-secret",
 };
 const target: ResolvedRepository = {
   identity: "artifacts:source",
   url: "https://example.artifacts.cloudflare.net/git/default/source.git",
-  authorization: "Bearer target-secret",
+  authorization: "Basic target-secret",
 };
 const from = { kind: "git", url: source.url, identity: source.identity } as const;
 const to = { kind: "git", url: target.url, identity: target.identity } as const;
-const change = {
+const change: ChangeObservation = {
   refs: [
     {
       ref: "refs/heads/main",
       before: "a".repeat(40),
       after: "b".repeat(40),
+      destination: { status: "unchecked" },
       commitCount: 1,
-      estimatedBytes: 100,
+      estimatedPatchBytes: 100,
       forced: false,
     },
   ],
-} as const;
+  complete: true,
+  sourceSizeBytes: null,
+};
 
-function setup(targetOid: string | undefined) {
+function setup(targetOid: string | null) {
   const resolver: RepositoryResolver = {
     resolve: vi.fn(async (repository) =>
-      repository.identity === source.identity ? source : target,
+      repository.kind === "git" && repository.identity === source.identity ? source : target,
     ),
   };
   const workspaceExecute = vi.fn<SyncExecutor["execute"]>(async (plan) => ({
     refs: plan.refs.map((item) => item.ref),
   }));
   const containerExecute = vi.fn<SyncExecutor["execute"]>(async () => ({ refs: [] }));
+  const hasCache = vi.fn<NonNullable<SyncExecutor["hasCache"]>>(async () => true);
   const client = createSyncClient({
     resolver,
     refs: { read: vi.fn(async () => targetOid) },
     workspace: {
-      hasCache: vi.fn(async () => true),
+      hasCache,
       execute: workspaceExecute,
     },
     container: { execute: containerExecute },
   });
-  return { client, workspaceExecute, containerExecute };
+  return { client, workspaceExecute, containerExecute, hasCache };
 }
 
 describe("createSyncClient", () => {
   it("suppresses a reverse-sync loop when the destination already matches", async () => {
     const { client, workspaceExecute, containerExecute } = setup("b".repeat(40));
     const result = await client.sync(from, to, { change });
+
     expect(result.executed).toBe(false);
     expect(result.plan.strategy).toBe("noop");
+    expect(result.plan.refs[0]?.before).toBe("a".repeat(40));
+    expect(result.plan.refs[0]?.destination).toEqual({
+      status: "present",
+      oid: "b".repeat(40),
+    });
     expect(workspaceExecute).not.toHaveBeenCalled();
     expect(containerExecute).not.toHaveBeenCalled();
   });
 
   it("uses the Workspace executor for a bounded cached change", async () => {
-    const { client, workspaceExecute } = setup("a".repeat(40));
+    const { client, workspaceExecute, hasCache } = setup("a".repeat(40));
     const result = await client.sync(from, to, { change });
+
+    expect(result.executed).toBe(true);
     expect(result.plan.strategy).toBe("workspace");
+    if (!result.executed) throw new Error("Expected sync execution");
+    expect(result.result.refs).toEqual(["refs/heads/main"]);
     expect(workspaceExecute).toHaveBeenCalledOnce();
+    expect(hasCache).toHaveBeenCalledWith(expect.any(String), [
+      expect.objectContaining({ before: "a".repeat(40), after: "b".repeat(40) }),
+    ]);
   });
 
-  it("uses the container for sync(from, to) without a push observation", async () => {
-    const { client, containerExecute } = setup(undefined);
-    const result = await client.sync(from, to);
+  it("runs a destructive mirror only when explicitly requested", async () => {
+    const { client, containerExecute } = setup(null);
+    const result = await client.sync(from, to, { mode: "mirror" });
     expect(result.plan).toMatchObject({ strategy: "container", mode: "mirror" });
     expect(containerExecute).toHaveBeenCalledOnce();
+  });
+
+  it("rejects syncing a repository to the same identity", async () => {
+    const { client } = setup(null);
+    await expect(client.sync(from, from, { mode: "mirror" })).rejects.toThrow(
+      "Source and destination repositories must be different",
+    );
   });
 });

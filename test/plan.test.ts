@@ -1,20 +1,23 @@
 import { describe, expect, it } from "vitest";
 
 import { planSync } from "../src/plan.js";
+import type { ChangeObservation, RefChange } from "../src/types.js";
 
-const smallChange = {
-  refs: [
-    {
-      ref: "refs/heads/main",
-      before: "a".repeat(40),
-      after: "b".repeat(40),
-      commitCount: 2,
-      estimatedBytes: 1024,
-      forced: false,
-    },
-  ],
+const smallRef: RefChange = {
+  ref: "refs/heads/main",
+  before: "a".repeat(40),
+  after: "b".repeat(40),
+  destination: { status: "present", oid: "a".repeat(40) },
+  commitCount: 2,
+  estimatedPatchBytes: 1024,
+  forced: false,
+};
+
+const smallChange: ChangeObservation = {
+  refs: [smallRef],
+  complete: true,
   sourceSizeBytes: 1024,
-} as const;
+};
 
 describe("planSync", () => {
   it("uses a warm Workspace for a bounded fast-forward change", () => {
@@ -24,8 +27,9 @@ describe("planSync", () => {
       strategy: "auto",
       cacheWarm: true,
     });
+
     expect(plan.strategy).toBe("workspace");
-    expect(plan.estimate).toMatchObject({ refs: 1, commits: 2, bytes: 1024 });
+    expect(plan.estimate).toMatchObject({ refs: 1, commits: 2, patchBytes: 1024 });
   });
 
   it("allows a cold Workspace only when the whole source is small", () => {
@@ -48,32 +52,21 @@ describe("planSync", () => {
     ).toBe("container");
   });
 
-  it.each([
-    [
-      "missing bytes",
-      {
-        ...smallChange,
-        refs: [
-          {
-            ref: smallChange.refs[0].ref,
-            before: smallChange.refs[0].before,
-            after: smallChange.refs[0].after,
-            commitCount: smallChange.refs[0].commitCount,
-            forced: smallChange.refs[0].forced,
-          },
-        ],
-      },
-    ],
-    ["forced update", { ...smallChange, refs: [{ ...smallChange.refs[0], forced: true }] }],
-    ["truncated inspection", { ...smallChange, truncated: true }],
-  ])("routes %s to the container", (_name, change) => {
-    const plan = planSync({
-      change,
-      mode: "push",
-      strategy: "auto",
-      cacheWarm: true,
-    });
-    expect(plan.strategy).toBe("container");
+  it("routes incomplete or unsafe evidence to the container", () => {
+    const changes: ChangeObservation[] = [
+      { ...smallChange, refs: [{ ...smallRef, estimatedPatchBytes: null }] },
+      { ...smallChange, refs: [{ ...smallRef, forced: true }] },
+      { ...smallChange, complete: false },
+    ];
+    for (const change of changes) {
+      const plan = planSync({
+        change,
+        mode: "push",
+        strategy: "auto",
+        cacheWarm: true,
+      });
+      expect(plan.strategy).toBe("container");
+    }
   });
 
   it("always uses native Git for a mirror", () => {
@@ -85,13 +78,69 @@ describe("planSync", () => {
     expect(plan.strategy).toBe("container");
   });
 
-  it("respects an explicit strategy override", () => {
+  it("uses a cold Workspace for a deletion because no source objects are needed", () => {
+    const deletion: ChangeObservation = {
+      refs: [
+        {
+          ...smallRef,
+          after: null,
+          destination: { status: "present", oid: "b".repeat(40) },
+          commitCount: 0,
+          estimatedPatchBytes: 0,
+        },
+      ],
+      complete: true,
+      sourceSizeBytes: null,
+    };
     const plan = planSync({
-      mode: "mirror",
-      strategy: "workspace",
+      change: deletion,
+      mode: "push",
+      strategy: "auto",
       cacheWarm: false,
     });
     expect(plan.strategy).toBe("workspace");
-    expect(plan.overridden).toBe(true);
+  });
+
+  it("rejects an explicit Workspace mirror", () => {
+    expect(() => planSync({ mode: "mirror", strategy: "workspace", cacheWarm: false })).toThrow(
+      "workspace strategy cannot mirror",
+    );
+  });
+
+  it("detects a no-op from destination state without overwriting source history", () => {
+    const change: ChangeObservation = {
+      ...smallChange,
+      refs: [
+        {
+          ...smallRef,
+          destination: { status: "present", oid: "b".repeat(40) },
+        },
+      ],
+    };
+    const plan = planSync({ change, mode: "push", strategy: "auto", cacheWarm: true });
+
+    expect(plan.strategy).toBe("noop");
+    expect(plan.refs[0]?.before).toBe("a".repeat(40));
+  });
+
+  it("rejects invalid limits and duplicate refs", () => {
+    expect(() =>
+      planSync({
+        change: smallChange,
+        mode: "push",
+        strategy: "auto",
+        limits: { refs: 0 },
+        cacheWarm: true,
+      }),
+    ).toThrow("limits.refs must be a positive safe integer");
+
+    expect(() =>
+      planSync({
+        change: { ...smallChange, refs: [smallRef, smallRef] },
+        mode: "push",
+        strategy: "auto",
+        cacheWarm: true,
+      }),
+    ).toThrow("Duplicate ref change");
   });
 });

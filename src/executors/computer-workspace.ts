@@ -1,4 +1,5 @@
 import type { Workspace } from "@cloudflare/computer";
+import { z } from "zod";
 
 import type {
   ExecutionContext,
@@ -12,11 +13,25 @@ const CACHE_ROOT = "/artifacts-sync";
 
 export function createComputerWorkspaceExecutor(workspace: Workspace): SyncExecutor {
   return {
-    async hasCache(pairKey: string): Promise<boolean> {
-      return pathExists(workspace, `${CACHE_ROOT}/${pairKey}/HEAD`);
+    async hasCache(pairKey: string, refs: readonly RefChange[]): Promise<boolean> {
+      const dir = `${CACHE_ROOT}/${pairKey}`;
+      if (!(await pathExists(workspace, `${dir}/HEAD`))) return false;
+      if (refs.some((change) => change.after !== null && change.before === null)) return false;
+      const baseOids = refs.flatMap((change) => {
+        if (change.after === null || change.before === null) return [];
+        return [change.before];
+      });
+      const available = await Promise.all(baseOids.map((oid) => hasObject(workspace, dir, oid)));
+      return available.every(Boolean);
     },
 
     async execute(plan: SyncPlan, context: ExecutionContext): Promise<ExecutorResult> {
+      if (plan.mode === "mirror") {
+        throw new Error("The Workspace executor cannot mirror repositories");
+      }
+      if (plan.refs.length === 0) {
+        throw new Error("The Workspace executor requires at least one ref change");
+      }
       const dir = `${CACHE_ROOT}/${context.pairKey}`;
       const warm = await pathExists(workspace, `${dir}/HEAD`);
       if (!warm) {
@@ -51,18 +66,24 @@ export function createComputerWorkspaceExecutor(workspace: Workspace): SyncExecu
   };
 }
 
+async function hasObject(workspace: Workspace, dir: string, oid: string): Promise<boolean> {
+  try {
+    await workspace.git.catFile({ dir, oid });
+    return true;
+  } catch {
+    // Missing or unreadable evidence is cold; the planner will select the native-Git path.
+    return false;
+  }
+}
+
 async function pathExists(workspace: Workspace, path: string): Promise<boolean> {
   try {
     await workspace.fs.stat(path);
     return true;
   } catch (error) {
-    if (isErrorCode(error, "ENOENT")) return false;
+    if (z.object({ code: z.literal("ENOENT") }).safeParse(error).success) return false;
     throw error;
   }
-}
-
-function isErrorCode(error: unknown, code: string): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === code;
 }
 
 async function applyRef(
@@ -71,7 +92,7 @@ async function applyRef(
   change: RefChange,
   context: ExecutionContext,
 ): Promise<void> {
-  if (change.after === undefined) {
+  if (change.after === null) {
     const deleted = await workspace.git.push({
       dir,
       url: context.to.url,

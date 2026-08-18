@@ -1,21 +1,28 @@
+import { z } from "zod";
+
+import { githubPushPayloadSchema, type GitHubPushPayload } from "./schemas.js";
 import type { ChangeObservation, RefChange } from "./types.js";
 
-const ZERO_OID = "0000000000000000000000000000000000000000";
 const MAX_COMPARE_BYTES = 20 * 1024 * 1024;
+const MAX_COMPARE_FILES = 300;
 
-export interface GitHubPushPayload {
-  readonly ref: string;
-  readonly before: string;
-  readonly after: string;
-  readonly forced: boolean;
-  readonly created?: boolean;
-  readonly deleted?: boolean;
-  readonly commits?: readonly unknown[];
-  readonly repository: {
-    readonly full_name: string;
-    /** GitHub reports this field in KiB. */
-    readonly size?: number;
-  };
+const compareFileSchema = z.object({
+  status: z.string().optional(),
+  additions: z.number().int().nonnegative().optional(),
+  deletions: z.number().int().nonnegative().optional(),
+  patch: z.string().optional(),
+});
+
+const compareResponseSchema = z.object({
+  total_commits: z.number().int().nonnegative().optional(),
+  files: z.array(compareFileSchema).optional(),
+});
+
+type CompareFile = z.infer<typeof compareFileSchema>;
+
+interface PatchEstimate {
+  readonly complete: boolean;
+  readonly patchBytes: number | null;
 }
 
 export interface InspectGitHubPushOptions {
@@ -25,151 +32,141 @@ export interface InspectGitHubPushOptions {
   readonly maxResponseBytes?: number;
 }
 
-interface CompareFile {
-  readonly status?: string;
-  readonly additions?: number;
-  readonly deletions?: number;
-  readonly patch?: string;
-}
-
-interface CompareResponse {
-  readonly total_commits?: number;
-  readonly files?: readonly CompareFile[];
-}
-
 export async function inspectGitHubPush(
   payload: GitHubPushPayload,
   options: InspectGitHubPushOptions = {},
 ): Promise<ChangeObservation> {
+  githubPushPayloadSchema.parse(payload);
+  const maxResponseBytes = options.maxResponseBytes ?? MAX_COMPARE_BYTES;
+  assertPositiveInteger(maxResponseBytes, "maxResponseBytes");
   const sourceSizeBytes =
-    payload.repository.size === undefined ? undefined : payload.repository.size * 1024;
+    payload.repository.size === undefined ? null : payload.repository.size * 1024;
 
-  if (payload.deleted) {
-    return {
-      refs: [
-        createRefChange(payload, {
-          commitCount: 0,
-          estimatedBytes: 0,
-        }),
-      ],
-      ...(sourceSizeBytes === undefined ? {} : { sourceSizeBytes }),
-    };
-  }
+  if (payload.deleted) return createObservation(payload, sourceSizeBytes, true, 0, 0);
 
-  if (payload.created || payload.before === ZERO_OID) {
-    const commitEstimate =
-      payload.commits === undefined ? {} : { commitCount: payload.commits.length };
-    return {
-      refs: [createRefChange(payload, commitEstimate)],
-      truncated: true,
-      ...(sourceSizeBytes === undefined ? {} : { sourceSizeBytes }),
-    };
+  if (payload.created || isZeroOid(payload.before)) {
+    return createObservation(
+      payload,
+      sourceSizeBytes,
+      false,
+      payload.commits?.length ?? null,
+      null,
+    );
   }
 
   const fetcher = options.fetch ?? globalThis.fetch;
   const base = options.apiUrl ?? "https://api.github.com";
+  const headers = new Headers({
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+  });
+  if (options.token !== undefined) headers.set("Authorization", `Bearer ${options.token}`);
+
   const response = await fetcher(
     `${base}/repos/${payload.repository.full_name}/compare/${payload.before}...${payload.after}`,
-    {
-      headers: {
-        Accept: "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        ...(options.token === undefined ? {} : { Authorization: `Bearer ${options.token}` }),
-      },
-    },
+    { headers },
   );
 
-  if (!response.ok) {
-    throw new Error(`GitHub compare failed with HTTP ${response.status}`);
-  }
+  if (!response.ok) throw new Error(`GitHub compare failed with HTTP ${response.status}`);
 
-  const contentLength = parseContentLength(response.headers.get("content-length"));
-  if (contentLength > (options.maxResponseBytes ?? MAX_COMPARE_BYTES)) {
-    return incompleteObservation(payload, sourceSizeBytes);
-  }
+  const text = await readBoundedText(response, maxResponseBytes);
+  if (text === null) return incompleteObservation(payload, sourceSizeBytes);
 
-  const comparison = parseCompareResponse(await response.json());
+  const comparison = compareResponseSchema.parse(JSON.parse(text));
   const estimate = estimatePatchBytes(comparison.files);
-  const commitCount = comparison.total_commits ?? payload.commits?.length;
-  const ref = createRefChange(payload, {
-    ...(commitCount === undefined ? {} : { commitCount }),
-    ...(estimate.bytes === undefined ? {} : { estimatedBytes: estimate.bytes }),
-  });
+  const commitCount = comparison.total_commits ?? payload.commits?.length ?? null;
+  return createObservation(
+    payload,
+    sourceSizeBytes,
+    estimate.complete,
+    commitCount,
+    estimate.patchBytes,
+  );
+}
 
+function createObservation(
+  payload: GitHubPushPayload,
+  sourceSizeBytes: number | null,
+  complete: boolean,
+  commitCount: number | null,
+  estimatedPatchBytes: number | null,
+): ChangeObservation {
   return {
-    refs: [ref],
-    ...(estimate.complete ? {} : { truncated: true }),
-    ...(sourceSizeBytes === undefined ? {} : { sourceSizeBytes }),
+    refs: [createRefChange(payload, commitCount, estimatedPatchBytes)],
+    complete,
+    sourceSizeBytes,
   };
 }
 
 function createRefChange(
   payload: GitHubPushPayload,
-  estimate: { commitCount?: number; estimatedBytes?: number },
+  commitCount: number | null,
+  estimatedPatchBytes: number | null,
 ): RefChange {
   return {
     ref: payload.ref,
-    ...(payload.before === ZERO_OID ? {} : { before: payload.before }),
-    ...(payload.after === ZERO_OID ? {} : { after: payload.after }),
+    before: isZeroOid(payload.before) ? null : payload.before,
+    after: isZeroOid(payload.after) ? null : payload.after,
+    destination: { status: "unchecked" },
+    commitCount,
+    estimatedPatchBytes,
     forced: payload.forced,
-    ...estimate,
   };
 }
 
 function incompleteObservation(
   payload: GitHubPushPayload,
-  sourceSizeBytes: number | undefined,
+  sourceSizeBytes: number | null,
 ): ChangeObservation {
-  const commitEstimate =
-    payload.commits === undefined ? {} : { commitCount: payload.commits.length };
-  return {
-    refs: [createRefChange(payload, commitEstimate)],
-    truncated: true,
-    ...(sourceSizeBytes === undefined ? {} : { sourceSizeBytes }),
-  };
+  return createObservation(payload, sourceSizeBytes, false, payload.commits?.length ?? null, null);
 }
 
-function parseCompareResponse(value: unknown): CompareResponse {
-  if (!isRecord(value)) return {};
-  const totalCommits = typeof value.total_commits === "number" ? value.total_commits : undefined;
-  const files = Array.isArray(value.files)
-    ? value.files.flatMap((file): CompareFile[] => {
-        if (!isRecord(file)) return [];
-        return [
-          {
-            ...(typeof file.status === "string" ? { status: file.status } : {}),
-            ...(typeof file.additions === "number" ? { additions: file.additions } : {}),
-            ...(typeof file.deletions === "number" ? { deletions: file.deletions } : {}),
-            ...(typeof file.patch === "string" ? { patch: file.patch } : {}),
-          },
-        ];
-      })
-    : undefined;
-  return {
-    ...(totalCommits === undefined ? {} : { total_commits: totalCommits }),
-    ...(files === undefined ? {} : { files }),
-  };
+async function readBoundedText(response: Response, maxBytes: number): Promise<string | null> {
+  const contentLength = parseContentLength(response.headers.get("content-length"));
+  if (contentLength !== null && contentLength > maxBytes) return null;
+  if (response.body === null) return "";
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  for (;;) {
+    // This loop consumes a bounded response stream; each read must finish before the next.
+    // eslint-disable-next-line no-await-in-loop
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    byteLength += chunk.value.byteLength;
+    if (byteLength > maxBytes) {
+      // The bounded stream must be cancelled before returning early.
+      // eslint-disable-next-line no-await-in-loop
+      await reader.cancel("GitHub compare response exceeded maxResponseBytes");
+      return null;
+    }
+    chunks.push(chunk.value);
+  }
+
+  const body = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(body);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
+function estimatePatchBytes(files: readonly CompareFile[] | undefined): PatchEstimate {
+  if (files === undefined || files.length >= MAX_COMPARE_FILES) {
+    return { complete: false, patchBytes: null };
+  }
 
-function estimatePatchBytes(files: readonly CompareFile[] | undefined): {
-  readonly complete: boolean;
-  readonly bytes?: number;
-} {
-  if (files === undefined || files.length >= 300) return { complete: false };
-
-  let bytes = 0;
+  let patchBytes = 0;
   for (const file of files) {
     if (file.status === "removed") continue;
     if (file.patch === undefined || !patchHasAllChanges(file)) {
-      return { complete: false };
+      return { complete: false, patchBytes: null };
     }
-    bytes += new TextEncoder().encode(file.patch).byteLength;
+    patchBytes += new TextEncoder().encode(file.patch).byteLength;
   }
-  return { complete: true, bytes };
+  return { complete: true, patchBytes };
 }
 
 function patchHasAllChanges(file: CompareFile): boolean {
@@ -185,8 +182,20 @@ function patchHasAllChanges(file: CompareFile): boolean {
   return additions >= file.additions && deletions >= file.deletions;
 }
 
-function parseContentLength(value: string | null): number {
-  if (value === null) return 0;
+function parseContentLength(value: string | null): number | null {
+  if (value === null) return null;
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
 }
+
+function isZeroOid(oid: string): boolean {
+  return /^0+$/.test(oid);
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer`);
+  }
+}
+
+export type { GitHubPushPayload };

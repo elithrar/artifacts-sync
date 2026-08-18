@@ -1,1 +1,3 @@
-{}
+{
+  "ignorePatterns": ["tools/oxlint/anti-slop/**"]
+}

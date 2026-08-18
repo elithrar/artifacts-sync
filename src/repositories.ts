@@ -36,17 +36,26 @@ export interface ArtifactsBindingLike {
 
 export interface CloudflareResolverOptions {
   readonly artifacts: ArtifactsBindingLike;
-  readonly githubToken?: string | ((repository: GitHubRepository) => Promise<string>);
+  readonly githubToken?: string;
+  readonly githubTokenFor?: (repository: GitHubRepository) => Promise<string>;
   readonly artifactTokenTtlSeconds?: number;
   readonly createMissingArtifactsRepositories?: boolean;
 }
 
 export function github(slug: string): GitHubRepository {
   const parts = slug.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+  const owner = parts[0];
+  const repo = parts[1];
+  if (
+    parts.length !== 2 ||
+    owner === undefined ||
+    repo === undefined ||
+    !/^[A-Za-z\d](?:[A-Za-z\d-]{0,37}[A-Za-z\d])?$/.test(owner) ||
+    !/^[A-Za-z\d._-]+$/.test(repo)
+  ) {
     throw new Error(`GitHub repository must be "owner/repo"; received ${slug}`);
   }
-  return { kind: "github", owner: parts[0], repo: parts[1] };
+  return { kind: "github", owner, repo };
 }
 
 export function artifacts(name: string): ArtifactsRepository {
@@ -60,31 +69,33 @@ export function git(
   url: string,
   options: { identity?: string; authorization?: string } = {},
 ): GitRepository {
-  const parsed = new URL(url);
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new Error("Git remotes must use HTTP or HTTPS");
+  assertSafeRemoteUrl(url);
+  if (options.identity !== undefined) validateOpaqueValue(options.identity, "Git identity");
+  if (options.authorization !== undefined) {
+    validateOpaqueValue(options.authorization, "Git authorization");
   }
-  return {
-    kind: "git",
-    url,
-    ...(options.identity === undefined ? {} : { identity: options.identity }),
-    ...(options.authorization === undefined ? {} : { authorization: options.authorization }),
-  };
+  return createGitRepository(url, options.identity, options.authorization);
 }
 
 export function createCloudflareResolver(options: CloudflareResolverOptions): RepositoryResolver {
   const ttl = options.artifactTokenTtlSeconds ?? 300;
+  if (!Number.isSafeInteger(ttl) || ttl < 60 || ttl > 31_536_000) {
+    throw new RangeError("artifactTokenTtlSeconds must be an integer between 60 and 31536000");
+  }
+  if (options.githubToken !== undefined && options.githubTokenFor !== undefined) {
+    throw new Error("Set githubToken or githubTokenFor, not both");
+  }
 
   return {
     async resolve(repository: Repository, access: RepositoryAccess): Promise<ResolvedRepository> {
       switch (repository.kind) {
         case "github": {
-          const token = await resolveGitHubToken(options.githubToken, repository);
-          return {
-            identity: `github:${repository.owner}/${repository.repo}`,
-            url: `https://github.com/${repository.owner}/${repository.repo}.git`,
-            ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
-          };
+          const token = await resolveGitHubToken(options, repository);
+          return createResolvedRepository(
+            `github:${repository.owner}/${repository.repo}`,
+            `https://github.com/${repository.owner}/${repository.repo}.git`,
+            token === undefined ? undefined : basicAuthorization("x-access-token", token),
+          );
         }
         case "artifacts": {
           const resolved = await resolveArtifactsRepo(options, repository.name, access);
@@ -92,24 +103,22 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
             return {
               identity: `artifacts:${repository.name}`,
               url: resolved.remote,
-              authorization: `Bearer ${resolved.token}`,
+              authorization: basicAuthorization("x", resolved.token),
             };
           }
           const token = await resolved.createToken(access, ttl);
           return {
             identity: `artifacts:${repository.name}`,
             url: resolved.remote,
-            authorization: `Bearer ${token.plaintext}`,
+            authorization: basicAuthorization("x", token.plaintext),
           };
         }
         case "git":
-          return {
-            identity: repository.identity ?? `git:${repository.url}`,
-            url: repository.url,
-            ...(repository.authorization === undefined
-              ? {}
-              : { authorization: repository.authorization }),
-          };
+          return createResolvedRepository(
+            repository.identity ?? `git:${repository.url}`,
+            repository.url,
+            repository.authorization,
+          );
         default:
           return assertNever(repository);
       }
@@ -122,13 +131,11 @@ function assertNever(value: never): never {
 }
 
 async function resolveGitHubToken(
-  configured: CloudflareResolverOptions["githubToken"],
+  options: CloudflareResolverOptions,
   repository: GitHubRepository,
 ): Promise<string | undefined> {
-  if (typeof configured === "function") {
-    return configured(repository);
-  }
-  return configured;
+  if (options.githubTokenFor !== undefined) return options.githubTokenFor(repository);
+  return options.githubToken;
 }
 
 async function resolveArtifactsRepo(
@@ -139,7 +146,8 @@ async function resolveArtifactsRepo(
   try {
     return await options.artifacts.get(name);
   } catch (error) {
-    if (access !== "write" || !options.createMissingArtifactsRepositories || !isNotFound(error)) {
+    const notFound = z.object({ code: z.literal("NOT_FOUND") }).safeParse(error).success;
+    if (access !== "write" || !options.createMissingArtifactsRepositories || !notFound) {
       throw error;
     }
     if (options.artifacts.create === undefined) {
@@ -151,8 +159,59 @@ async function resolveArtifactsRepo(
   }
 }
 
-function isNotFound(error: unknown): boolean {
-  return (
-    typeof error === "object" && error !== null && "code" in error && error.code === "NOT_FOUND"
-  );
+function createGitRepository(
+  url: string,
+  identity: string | undefined,
+  authorization: string | undefined,
+): GitRepository {
+  if (identity === undefined) {
+    if (authorization === undefined) return { kind: "git", url };
+    return { kind: "git", url, authorization };
+  }
+  if (authorization === undefined) return { kind: "git", url, identity };
+  return { kind: "git", url, identity, authorization };
 }
+
+function createResolvedRepository(
+  identity: string,
+  url: string,
+  authorization: string | undefined,
+): ResolvedRepository {
+  assertSafeRemoteUrl(url);
+  validateOpaqueValue(identity, "Repository identity");
+  if (authorization !== undefined) validateOpaqueValue(authorization, "Git authorization");
+  if (authorization === undefined) return { identity, url };
+  return { identity, url, authorization };
+}
+
+function basicAuthorization(username: string, password: string): string {
+  if (password.length === 0 || hasControlCharacter(password)) {
+    throw new Error("Git credential token must be non-empty and contain no control characters");
+  }
+  return `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 || codePoint === 0x7f) return true;
+  }
+  return false;
+}
+
+function assertSafeRemoteUrl(url: string): void {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" || parsed.hostname.length === 0) {
+    throw new Error("Git remotes must use HTTPS");
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    throw new Error("Pass Git credentials through authorization, not the remote URL");
+  }
+}
+
+function validateOpaqueValue(value: string, name: string): void {
+  if (value.length === 0 || hasControlCharacter(value)) {
+    throw new Error(`${name} must be non-empty and contain no control characters`);
+  }
+}
+import { z } from "zod";
