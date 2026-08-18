@@ -23,6 +23,7 @@ One Worker can configure multiple independent repository pairs. Bidirectional pa
 - Reject duplicate pairs, conflicting namespace bindings, and fan-out from a source repository.
 - Synchronize only refs named by a push. Full repository mirroring is not part of the public API.
 - Read source and destination refs before executing. Drop stale events whose source ref has moved and return a no-op when the destination already equals the triggering object.
+- Verify the source ref again in the native-Git executor. Protect forced updates and deletions with `--force-with-lease`, and require a destructive destination update to still match the event's previous object. Divergent or concurrent destination pushes fail instead of being overwritten.
 - Use a persistent `@cloudflare/computer` Workspace and its isomorphic-git client only for bounded changes.
 - Use the Computer container backend and native Git for large, forced, or uncertain transfers.
 - Treat missing evidence as large. Commit count is never a byte-size estimate.
@@ -39,7 +40,7 @@ The initial Workspace limits are:
 | Complete UTF-8 patch bytes   |          16 MiB |
 | Cold-cache source repository |          16 MiB |
 
-The Workspace strategy also requires a fast-forward update, complete inspection data, and either every source base object in the ordered pair cache or a source repository below the cold-cache limit. Cache-directory existence alone is not warm evidence. Ref deletions do not need source objects. Any force push, truncation, binary or unknown patch, or unknown size selects the container.
+The Workspace strategy also requires a nondeleting, confirmed fast-forward update, complete inspection data, and either every source base object in the ordered pair cache or a source repository below the cold-cache limit. Cache-directory existence alone is not warm evidence. Any deletion, force push, truncation, binary or unknown patch, or unknown size selects the container.
 
 GitHub push inspection uses the Compare API. It accepts a patch estimate only when every nondeleted file includes a complete patch and bounds the streamed response even when `Content-Length` is absent or wrong. Patch bytes are a routing signal, not Git pack bytes. Current Artifacts push events expose commit counts but no byte estimate, so Artifacts-originated changes default to the container.
 
@@ -96,7 +97,7 @@ The root package exposes `syncRepos` and the three Cloudflare runtime classes re
 - Add an Artifacts tree or blob-size inspector when the binding exposes a bounded object-reading API.
 - Add a cache eviction or rebuild policy because Computer's isomorphic-git pack cache is unbounded and has no `git gc` support.
 - Pin and test Computer upgrades.
-- Define conflict policy for simultaneous human pushes. The default remains fast-forward only; the public API does not provide forced reconciliation.
+- Define a higher-level conflict-resolution policy for simultaneous human pushes. The current policy fails closed: fast-forwards may proceed, while destructive updates require the destination to match the source event's previous object.
 - Add post-push destination verification when the upstream APIs expose a cheap, reliable consistency signal.
 
 ## Currently unsupported

@@ -112,4 +112,23 @@ describe("createComputerWorkspaceExecutor", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(push).not.toHaveBeenCalled();
   });
+
+  it("rejects pending deletions and unconfirmed force-push state", async () => {
+    const { workspace, push } = fakeWorkspace(after);
+    const executor = createComputerWorkspaceExecutor(workspace);
+    const deletion: SyncPlan = {
+      ...plan,
+      refs: [{ ...plan.refs[0]!, after: null }],
+    };
+    const uncertain: SyncPlan = {
+      ...plan,
+      refs: [{ ...plan.refs[0]!, forced: null }],
+    };
+
+    await expect(executor.execute(deletion, context)).rejects.toThrow("cannot safely delete refs");
+    await expect(executor.execute(uncertain, context)).rejects.toThrow(
+      "requires a confirmed fast-forward",
+    );
+    expect(push).not.toHaveBeenCalled();
+  });
 });

@@ -43,6 +43,8 @@ describe("inspectGitHubPush", () => {
     expect(observation.sourceSizeBytes).toBe(12 * 1024);
     const requestHeaders = new Headers(fetcher.mock.calls[0]?.[1]?.headers);
     expect(requestHeaders.get("authorization")).toBe("Bearer secret");
+    expect(requestHeaders.get("user-agent")).toBe("@elithrar/artifacts-sync");
+    expect(requestHeaders.get("x-github-api-version")).toBe("2026-03-10");
   });
 
   it("marks a comparison without complete patches as incomplete", async () => {

@@ -83,8 +83,11 @@ const githubSyncJobSchema = z.object({
 const syncJobSchema = z.union([githubSyncJobSchema, artifactsPushEventSchema]);
 const artifactsBindingSchema = z.object({
   get: z.function(),
-  create: z.function(),
+  create: z.function().optional(),
 });
+const MAX_WORKFLOW_INSTANCE_ID_LENGTH = 100;
+const PAIR_SUFFIX_LENGTH = 17;
+const MAX_PRESERVED_DELIVERY_ID_LENGTH = MAX_WORKFLOW_INSTANCE_ID_LENGTH - PAIR_SUFFIX_LENGTH;
 
 // This immutable deployment configuration is created during module evaluation. It never holds
 // request state, credentials, bindings, or promises from a request.
@@ -350,9 +353,21 @@ function requiredSecret(value: string, name: string): string {
 }
 
 async function workflowInstanceId(delivery: string, configurationId: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(configurationId));
-  const prefix = Array.from(new Uint8Array(digest).slice(0, 8), (byte) =>
+  const encoder = new TextEncoder();
+  const [configurationDigest, deliveryDigest] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(configurationId)),
+    delivery.length > MAX_PRESERVED_DELIVERY_ID_LENGTH
+      ? crypto.subtle.digest("SHA-256", encoder.encode(delivery))
+      : undefined,
+  ]);
+  const prefix = Array.from(new Uint8Array(configurationDigest).slice(0, 8), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
-  return `${delivery}-${prefix}`;
+  const deliveryId =
+    deliveryDigest === undefined
+      ? delivery
+      : Array.from(new Uint8Array(deliveryDigest).slice(0, 16), (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+  return `${deliveryId}-${prefix}`;
 }

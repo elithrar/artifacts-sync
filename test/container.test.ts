@@ -96,4 +96,69 @@ describe("createComputerContainerExecutor", () => {
     expect(result.refs).toEqual(["refs/heads/main"]);
     expect(exec.mock.calls[0]?.[0]).not.toContain("refs/heads/obsolete");
   });
+
+  it("verifies the fetched source object before pushing", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+
+    await executor.execute(plan, context);
+
+    const command = exec.mock.calls[0]?.[0] ?? "";
+    expect(command).toContain(
+      `source_oid="$(git -C "$workdir/repo.git" rev-parse 'refs/heads/main')"`,
+    );
+    expect(command).toContain(`if [ "$source_oid" != '${"b".repeat(40)}' ]`);
+  });
+
+  it("uses force-with-lease for forced updates and deletions", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const forced = { ...plan.refs[0]!, forced: true };
+
+    await executor.execute({ ...plan, refs: [forced] }, context);
+    expect(exec.mock.calls[0]?.[0]).toContain(
+      `'--force-with-lease=refs/heads/main:${"a".repeat(40)}'`,
+    );
+
+    const deletion = { ...plan.refs[0]!, after: null };
+    await executor.execute({ ...plan, refs: [deletion] }, context);
+    const deletionCommand = exec.mock.calls[1]?.[0] ?? "";
+    expect(deletionCommand).toContain("source_git ls-remote --exit-code");
+    expect(deletionCommand).toContain("Source ref moved after sync planning");
+    expect(deletionCommand).toContain(`'--force-with-lease=refs/heads/main:${"a".repeat(40)}'`);
+  });
+
+  it("shell-quotes source refs in diagnostics", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const ref = "refs/heads/$(id)";
+    const deletion = { ...plan.refs[0]!, ref, after: null };
+
+    await executor.execute({ ...plan, refs: [deletion] }, context);
+
+    const command = exec.mock.calls[0]?.[0] ?? "";
+    expect(command).toContain(`echo 'Source ref moved after sync planning: ${ref}' >&2`);
+    expect(command).not.toContain(`echo "Source ref moved after sync planning: ${ref}"`);
+  });
+
+  it("refuses to overwrite an already-diverged destination", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>();
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const diverged = {
+      ...plan.refs[0]!,
+      forced: true,
+      destination: { status: "present" as const, oid: "c".repeat(40) },
+    };
+
+    await expect(executor.execute({ ...plan, refs: [diverged] }, context)).rejects.toThrow(
+      "Cannot destructively update diverged destination ref",
+    );
+    expect(exec).not.toHaveBeenCalled();
+  });
 });

@@ -7,6 +7,8 @@ const MAX_COMPARE_BYTES = 20 * 1024 * 1024;
 const MAX_COMPARE_FILES = 300;
 const MAX_WEBHOOK_BYTES = 10 * 1024 * 1024;
 const GITHUB_WEBHOOK_PATH = "/webhooks/github";
+const GITHUB_API_VERSION = "2026-03-10";
+const GITHUB_USER_AGENT = "@elithrar/artifacts-sync";
 
 const compareFileSchema = z.object({
   status: z.string().optional(),
@@ -118,7 +120,8 @@ export async function inspectGitHubPush(
   const base = options.apiUrl ?? "https://api.github.com";
   const headers = new Headers({
     Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
+    "User-Agent": GITHUB_USER_AGENT,
+    "X-GitHub-Api-Version": GITHUB_API_VERSION,
   });
   if (options.token !== undefined) headers.set("Authorization", `Bearer ${options.token}`);
 

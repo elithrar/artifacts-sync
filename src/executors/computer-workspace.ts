@@ -63,6 +63,12 @@ export function createComputerWorkspaceExecutor(workspace: ComputerWorkspaceLike
       });
 
       const pendingRefs = plan.refs.filter((change) => !isSynchronized(change));
+      if (pendingRefs.some((change) => change.after === null)) {
+        throw new Error("The Workspace executor cannot safely delete refs; use the container");
+      }
+      if (pendingRefs.some((change) => change.forced !== false)) {
+        throw new Error("The Workspace executor requires a confirmed fast-forward update");
+      }
       for (const change of pendingRefs) {
         // Ref updates are intentionally serialized within the pair coordinator.
         // eslint-disable-next-line no-await-in-loop
@@ -107,17 +113,7 @@ async function applyRef(
   change: RefChange,
   context: ExecutionContext,
 ): Promise<void> {
-  if (change.after === null) {
-    const deleted = await workspace.git.push({
-      dir,
-      url: context.to.url,
-      remoteRef: change.ref,
-      delete: true,
-      ...headers(context.to.authorization),
-    });
-    assertPush(deleted.ok, deleted.error, change.ref);
-    return;
-  }
+  if (change.after === null) throw new Error("Workspace ref deletion is not supported");
 
   const localRef = `refs/heads/artifacts-sync-${await shortHash(change.ref)}`;
   const fetched = await workspace.git.fetch({

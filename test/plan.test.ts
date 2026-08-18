@@ -78,7 +78,7 @@ describe("planSync", () => {
     expect(plan.strategy).toBe("container");
   });
 
-  it("uses a cold Workspace for a deletion because no source objects are needed", () => {
+  it("routes deletions through native Git for compare-and-swap protection", () => {
     const deletion: ChangeObservation = {
       refs: [
         {
@@ -98,13 +98,34 @@ describe("planSync", () => {
       strategy: "auto",
       cacheWarm: false,
     });
-    expect(plan.strategy).toBe("workspace");
+    expect(plan).toMatchObject({
+      strategy: "container",
+      reason: "Ref deletions require native Git compare-and-swap protection",
+    });
   });
 
   it("rejects an explicit Workspace mirror", () => {
     expect(() => planSync({ mode: "mirror", strategy: "workspace", cacheWarm: false })).toThrow(
       "workspace strategy cannot mirror",
     );
+  });
+
+  it("rejects unsafe explicit Workspace overrides", () => {
+    const deletion = {
+      ...smallChange,
+      refs: [{ ...smallRef, after: null }],
+    };
+    const uncertain = {
+      ...smallChange,
+      refs: [{ ...smallRef, forced: null }],
+    };
+
+    expect(() =>
+      planSync({ change: deletion, mode: "push", strategy: "workspace", cacheWarm: true }),
+    ).toThrow("cannot safely delete refs");
+    expect(() =>
+      planSync({ change: uncertain, mode: "push", strategy: "workspace", cacheWarm: true }),
+    ).toThrow("requires a confirmed fast-forward");
   });
 
   it("detects a no-op from destination state without overwriting source history", () => {

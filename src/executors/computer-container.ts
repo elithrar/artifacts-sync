@@ -112,12 +112,25 @@ function isSynchronized(change: RefChange): boolean {
 
 function buildRefCommands(change: RefChange): string {
   const ref = shellQuote(change.ref);
+  const sourceMovedMessage = shellQuote(`Source ref moved after sync planning: ${change.ref}`);
   if (change.after === null) {
-    return `target_git -C "$workdir/repo.git" push "$SYNC_TARGET_URL" :${ref}`;
+    const lease = forceWithLease(change);
+    return `set +e
+source_git ls-remote --exit-code "$SYNC_SOURCE_URL" ${ref} >/dev/null
+source_status=$?
+set -e
+if [ "$source_status" -eq 0 ]; then
+  echo ${sourceMovedMessage} >&2
+  exit 75
+elif [ "$source_status" -ne 2 ]; then
+  exit "$source_status"
+fi
+target_git -C "$workdir/repo.git" push ${lease} "$SYNC_TARGET_URL" :${ref}`;
   }
 
   const seedRef = shellQuote(`refs/artifacts-sync/target/${encodeRef(change.ref)}`);
-  const force = change.forced === true ? " --force" : "";
+  const expectedSourceOid = shellQuote(change.after);
+  const updateProtection = change.forced === true ? ` ${forceWithLease(change)}` : "";
   return `set +e
 target_git ls-remote --exit-code "$SYNC_TARGET_URL" ${ref} >/dev/null
 target_status=$?
@@ -128,7 +141,27 @@ elif [ "$target_status" -ne 2 ]; then
   exit "$target_status"
 fi
 source_git -C "$workdir/repo.git" fetch --no-tags "$SYNC_SOURCE_URL" +${ref}:${ref}
-target_git -C "$workdir/repo.git" push${force} "$SYNC_TARGET_URL" ${ref}:${ref}`;
+source_oid="$(git -C "$workdir/repo.git" rev-parse ${ref})"
+if [ "$source_oid" != ${expectedSourceOid} ]; then
+  echo ${sourceMovedMessage} >&2
+  exit 75
+fi
+target_git -C "$workdir/repo.git" push${updateProtection} "$SYNC_TARGET_URL" ${ref}:${ref}`;
+}
+
+function forceWithLease(change: RefChange): string {
+  if (change.destination.status === "unchecked") {
+    throw new Error(`Cannot update ${change.ref} before reading the destination ref`);
+  }
+  if (change.destination.status === "present" && !sameOid(change.destination.oid, change.before)) {
+    throw new Error(`Cannot destructively update diverged destination ref ${change.ref}`);
+  }
+  const expected = change.destination.status === "present" ? change.destination.oid : "";
+  return shellQuote(`--force-with-lease=${change.ref}:${expected}`);
+}
+
+function sameOid(left: string, right: string | null): boolean {
+  return right !== null && left.toLowerCase() === right.toLowerCase();
 }
 
 function createEnvironment(context: ExecutionContext) {

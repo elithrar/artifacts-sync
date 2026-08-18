@@ -120,6 +120,12 @@ function validateStrategyCapability(
   if (strategy === "workspace" && mode === "mirror") {
     throw new Error("The workspace strategy cannot mirror repositories; use container");
   }
+  if (strategy === "workspace" && refs.some((change) => change.after === null)) {
+    throw new Error("The workspace strategy cannot safely delete refs; use container");
+  }
+  if (strategy === "workspace" && refs.some((change) => change.forced !== false)) {
+    throw new Error("The workspace strategy requires a confirmed fast-forward update");
+  }
   if (strategy === "workspace" && refs.some(usesSha256)) {
     throw new Error("The workspace strategy supports SHA-1 repositories only; use container");
   }
@@ -136,6 +142,9 @@ function automaticContainerReason(input: PlanSyncInput, limits: SyncLimits): str
   }
   if (input.change.refs.some(usesSha256)) {
     return "SHA-256 object IDs require native Git";
+  }
+  if (input.change.refs.some((change) => change.after === null)) {
+    return "Ref deletions require native Git compare-and-swap protection";
   }
   if (input.change.refs.some((change) => change.forced !== false)) {
     return "Force-push status is true or unknown";
