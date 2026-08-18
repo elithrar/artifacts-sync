@@ -130,7 +130,7 @@ target_git -C "$workdir/repo.git" push ${lease} "$SYNC_TARGET_URL" :${ref}`;
 
   const seedRef = shellQuote(`refs/artifacts-sync/target/${encodeRef(change.ref)}`);
   const expectedSourceOid = shellQuote(change.after);
-  const updateProtection = change.forced === true ? ` ${forceWithLease(change)}` : "";
+  const updateProtection = change.forced === false ? "" : ` ${forceWithLease(change)}`;
   return `set +e
 target_git ls-remote --exit-code "$SYNC_TARGET_URL" ${ref} >/dev/null
 target_status=$?
@@ -153,15 +153,8 @@ function forceWithLease(change: RefChange): string {
   if (change.destination.status === "unchecked") {
     throw new Error(`Cannot update ${change.ref} before reading the destination ref`);
   }
-  if (change.destination.status === "present" && !sameOid(change.destination.oid, change.before)) {
-    throw new Error(`Cannot destructively update diverged destination ref ${change.ref}`);
-  }
   const expected = change.destination.status === "present" ? change.destination.oid : "";
   return shellQuote(`--force-with-lease=${change.ref}:${expected}`);
-}
-
-function sameOid(left: string, right: string | null): boolean {
-  return right !== null && left.toLowerCase() === right.toLowerCase();
 }
 
 function createEnvironment(context: ExecutionContext) {

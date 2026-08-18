@@ -112,24 +112,71 @@ describe("createComputerContainerExecutor", () => {
     expect(command).toContain(`if [ "$source_oid" != '${"b".repeat(40)}' ]`);
   });
 
-  it("uses force-with-lease for forced updates and deletions", async () => {
+  it("leases the observed destination for forced and unknown updates", async () => {
     const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
       result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     }));
     const executor = createComputerContainerExecutor({ runtime: { exec } });
-    const forced = { ...plan.refs[0]!, forced: true };
+    const divergedDestination = { status: "present" as const, oid: "c".repeat(40) };
+    const forced = { ...plan.refs[0]!, forced: true, destination: divergedDestination };
 
     await executor.execute({ ...plan, refs: [forced] }, context);
     expect(exec.mock.calls[0]?.[0]).toContain(
-      `'--force-with-lease=refs/heads/main:${"a".repeat(40)}'`,
+      `'--force-with-lease=refs/heads/main:${"c".repeat(40)}'`,
     );
 
-    const deletion = { ...plan.refs[0]!, after: null };
+    const unknown = { ...plan.refs[0]!, forced: null, destination: divergedDestination };
+    await executor.execute({ ...plan, refs: [unknown] }, context);
+    expect(exec.mock.calls[1]?.[0]).toContain(
+      `'--force-with-lease=refs/heads/main:${"c".repeat(40)}'`,
+    );
+  });
+
+  it("leases the absence of a missing destination ref", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const creation = {
+      ...plan.refs[0]!,
+      before: null,
+      forced: null,
+      destination: { status: "missing" as const },
+    };
+
+    await executor.execute({ ...plan, refs: [creation] }, context);
+
+    expect(exec.mock.calls[0]?.[0]).toContain("'--force-with-lease=refs/heads/main:'");
+  });
+
+  it("keeps confirmed fast-forward updates non-forced", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+
+    await executor.execute(plan, context);
+
+    expect(exec.mock.calls[0]?.[0]).not.toContain("--force-with-lease");
+  });
+
+  it("leases the observed destination when deleting a ref", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const deletion = {
+      ...plan.refs[0]!,
+      after: null,
+      destination: { status: "present" as const, oid: "c".repeat(40) },
+    };
+
     await executor.execute({ ...plan, refs: [deletion] }, context);
-    const deletionCommand = exec.mock.calls[1]?.[0] ?? "";
-    expect(deletionCommand).toContain("source_git ls-remote --exit-code");
-    expect(deletionCommand).toContain("Source ref moved after sync planning");
-    expect(deletionCommand).toContain(`'--force-with-lease=refs/heads/main:${"a".repeat(40)}'`);
+
+    const command = exec.mock.calls[0]?.[0] ?? "";
+    expect(command).toContain("source_git ls-remote --exit-code");
+    expect(command).toContain("Source ref moved after sync planning");
+    expect(command).toContain(`'--force-with-lease=refs/heads/main:${"c".repeat(40)}'`);
   });
 
   it("shell-quotes source refs in diagnostics", async () => {
@@ -147,17 +194,17 @@ describe("createComputerContainerExecutor", () => {
     expect(command).not.toContain(`echo "Source ref moved after sync planning: ${ref}"`);
   });
 
-  it("refuses to overwrite an already-diverged destination", async () => {
+  it("requires an observed destination before a forced update", async () => {
     const exec = vi.fn<ComputerRuntimeLike["exec"]>();
     const executor = createComputerContainerExecutor({ runtime: { exec } });
-    const diverged = {
+    const unchecked = {
       ...plan.refs[0]!,
       forced: true,
-      destination: { status: "present" as const, oid: "c".repeat(40) },
+      destination: { status: "unchecked" as const },
     };
 
-    await expect(executor.execute({ ...plan, refs: [diverged] }, context)).rejects.toThrow(
-      "Cannot destructively update diverged destination ref",
+    await expect(executor.execute({ ...plan, refs: [unchecked] }, context)).rejects.toThrow(
+      "before reading the destination ref",
     );
     expect(exec).not.toHaveBeenCalled();
   });

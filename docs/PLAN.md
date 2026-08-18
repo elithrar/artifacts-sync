@@ -23,7 +23,7 @@ One Worker can configure multiple independent repository pairs. Bidirectional pa
 - Reject duplicate pairs, conflicting namespace bindings, and fan-out from a source repository.
 - Synchronize only refs named by a push. Full repository mirroring is not part of the public API.
 - Read source and destination refs before executing. Drop stale events whose source ref has moved and return a no-op when the destination already equals the triggering object.
-- Verify the source ref again in the native-Git executor. Protect forced updates and deletions with `--force-with-lease`, and require a destructive destination update to still match the event's previous object. Divergent or concurrent destination pushes fail instead of being overwritten.
+- Treat the source of a current push event as authoritative. Verify its ref again in the native-Git executor, then protect forced, ancestry-unknown, and deletion updates with `--force-with-lease` against the destination object observed for that attempt. A lease failure retries the full observation within the Workflow retry limit; an event whose source has since moved becomes a no-op.
 - Use a persistent `@cloudflare/computer` Workspace and its isomorphic-git client only for bounded changes.
 - Use the Computer container backend and native Git for large, forced, or uncertain transfers.
 - Treat missing evidence as large. Commit count is never a byte-size estimate.
@@ -97,7 +97,7 @@ The root package exposes `syncRepos` and the three Cloudflare runtime classes re
 - Add an Artifacts tree or blob-size inspector when the binding exposes a bounded object-reading API.
 - Add a cache eviction or rebuild policy because Computer's isomorphic-git pack cache is unbounded and has no `git gc` support.
 - Pin and test Computer upgrades.
-- Define a higher-level conflict-resolution policy for simultaneous human pushes. The current policy fails closed: fast-forwards may proceed, while destructive updates require the destination to match the source event's previous object.
+- Define an optional higher-level conflict-resolution policy for simultaneous human pushes. The current bidirectional policy has no cross-provider clock: the first serialized attempt whose source remains current and whose destination lease succeeds wins; reflected or superseded events become no-ops.
 - Add post-push destination verification when the upstream APIs expose a cheap, reliable consistency signal.
 
 ## Currently unsupported
