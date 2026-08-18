@@ -40,6 +40,7 @@ function fakeWorkspace(fetchHead: string | null) {
   const mkdir = vi.fn<ComputerWorkspaceLike["fs"]["mkdir"]>(async () => undefined);
   const init = vi.fn<ComputerWorkspaceLike["git"]["init"]>(async () => undefined);
   const remoteAdd = vi.fn<ComputerWorkspaceLike["git"]["remoteAdd"]>(async () => undefined);
+  const configSet = vi.fn<ComputerWorkspaceLike["git"]["configSet"]>(async () => undefined);
   const fetch = vi.fn<ComputerWorkspaceLike["git"]["fetch"]>(async () => ({
     defaultBranch: null,
     fetchHead,
@@ -53,20 +54,29 @@ function fakeWorkspace(fetchHead: string | null) {
   const catFile = vi.fn<ComputerWorkspaceLike["git"]["catFile"]>();
   const workspace: ComputerWorkspaceLike = {
     fs: { stat, mkdir },
-    git: { init, remoteAdd, fetch, updateRef, push, catFile },
+    git: { init, remoteAdd, configSet, fetch, updateRef, push, catFile },
   };
-  return { workspace, fetch, updateRef, push };
+  return { workspace, configSet, fetch, updateRef, push };
 }
 
 describe("createComputerWorkspaceExecutor", () => {
   it("fetches the observed object and materializes the local ref before pushing", async () => {
-    const { workspace, fetch, updateRef, push } = fakeWorkspace(after);
+    const { workspace, configSet, fetch, updateRef, push } = fakeWorkspace(after);
     const executor = createComputerWorkspaceExecutor(workspace);
 
     await executor.execute(plan, context);
 
+    expect(configSet).toHaveBeenCalledWith({
+      dir: "/artifacts-sync/pair",
+      path: "remote.source.fetch",
+      value: "+refs/*:refs/remotes/source/*",
+    });
     expect(fetch).toHaveBeenCalledWith(
-      expect.objectContaining({ remoteRef: after, singleBranch: true }),
+      expect.objectContaining({
+        remote: "source",
+        remoteRef: "refs/heads/main",
+        singleBranch: true,
+      }),
     );
     const fetchCall = fetch.mock.calls[0];
     const fetchOptions = fetchCall?.[0];
@@ -80,7 +90,7 @@ describe("createComputerWorkspaceExecutor", () => {
       value: after,
       force: true,
     });
-    expect(push).toHaveBeenCalledWith(expect.objectContaining({ ref: localRef }));
+    expect(push).toHaveBeenCalledWith(expect.objectContaining({ remote: "target", ref: localRef }));
   });
 
   it("fails closed when the source does not return the observed object", async () => {

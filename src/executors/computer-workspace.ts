@@ -15,7 +15,7 @@ export interface ComputerWorkspaceLike {
   readonly fs: Pick<Workspace["fs"], "mkdir" | "stat">;
   readonly git: Pick<
     Workspace["git"],
-    "catFile" | "fetch" | "init" | "push" | "remoteAdd" | "updateRef"
+    "catFile" | "configSet" | "fetch" | "init" | "push" | "remoteAdd" | "updateRef"
   >;
 }
 
@@ -54,6 +54,11 @@ export function createComputerWorkspaceExecutor(workspace: ComputerWorkspaceLike
         name: "source",
         url: context.from.url,
         force: true,
+      });
+      await workspace.git.configSet({
+        dir,
+        path: "remote.source.fetch",
+        value: "+refs/*:refs/remotes/source/*",
       });
       await workspace.git.remoteAdd({
         dir,
@@ -118,9 +123,9 @@ async function applyRef(
   const localRef = `refs/heads/artifacts-sync-${await shortHash(change.ref)}`;
   const fetched = await workspace.git.fetch({
     dir,
-    url: context.from.url,
+    remote: "source",
     ref: localRef,
-    remoteRef: change.after,
+    remoteRef: change.ref,
     singleBranch: true,
     tags: false,
     ...headers(context.from.authorization),
@@ -136,7 +141,7 @@ async function applyRef(
   });
   const pushed = await workspace.git.push({
     dir,
-    url: context.to.url,
+    remote: "target",
     ref: localRef,
     remoteRef: change.ref,
     force: change.forced ?? false,
