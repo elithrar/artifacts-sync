@@ -62,6 +62,8 @@ Each configured source repository must be unique in its enabled direction. Confi
 
 Set `artifactsBinding` to override that binding name, including for the `default` namespace. This is useful when the surrounding Worker already uses `ARTIFACTS` for another purpose.
 
+Set `artifactsRemote` to the repository's HTTPS Git URL when the runtime binding returns a repo handle without its metadata fields. The binding still mints the short-lived repo token.
+
 Use `namespace/repo` for another namespace and name its binding explicitly:
 
 ```ts

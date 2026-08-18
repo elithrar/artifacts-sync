@@ -7,7 +7,7 @@ export const artifactsPushEventSchema = z
   .object({
     type: z.literal("cf.artifacts.repo.pushed"),
     source: z.object({
-      type: z.literal("artifacts.repo"),
+      type: z.string().min(1).optional(),
       namespace: z.string().min(1),
       repoName: z.string().min(1),
     }),

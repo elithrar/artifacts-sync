@@ -41,7 +41,7 @@ const context: ExecutionContext = {
 };
 
 describe("createComputerContainerExecutor", () => {
-  it("passes credentials through the exec environment, not the command", async () => {
+  it("passes credentials through stdin, not the command", async () => {
     const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
       result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
     }));
@@ -52,10 +52,12 @@ describe("createComputerContainerExecutor", () => {
     const [command, options] = exec.mock.calls[0] ?? [];
     expect(command).not.toContain("source-secret");
     expect(command).not.toContain("target-secret");
-    expect(options?.env).toMatchObject({
-      SYNC_SOURCE_AUTHORIZATION: "Basic source-secret",
-      SYNC_TARGET_AUTHORIZATION: "Basic target-secret",
-    });
+    expect(options?.stdin).toBe(
+      "https://source.example/repo.git\nhttps://target.example/repo.git\nBasic source-secret\nBasic target-secret\n",
+    );
+    expect(command).toContain('GIT_ASKPASS="$askpass"');
+    expect(command).toContain("credentials=\"$(printf '%s'");
+    expect(options?.backend).toBe("container-shell");
   });
 
   it("reports native Git failures without exposing the command environment", async () => {

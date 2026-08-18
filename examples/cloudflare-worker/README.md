@@ -1,11 +1,10 @@
 # Cloudflare Worker example
 
-This Worker synchronizes two independent repository pairs:
+This Worker synchronizes one repository pair:
 
-- `elithrar/example` ↔ `default/example`
-- `elithrar/example-staging` ↔ `staging/example`
+- `elithrar/artifacts-sync` ↔ `default/artifacts-sync`
 
-Both GitHub webhooks use the same Worker endpoint. Separate Artifacts bindings and event filters identify the two namespaces.
+GitHub and Artifacts pushes use the same Workflow to keep the repositories synchronized in both directions.
 
 ## Configure repository pairs
 
@@ -16,22 +15,16 @@ import { syncRepos } from "@elithrar/artifacts-sync";
 
 export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
 
-export default syncRepos([
-  {
-    github: "elithrar/example",
-    artifacts: "example",
-    direction: "bidirectional",
-  },
-  {
-    github: "elithrar/example-staging",
-    artifacts: "staging/example",
-    artifactsBinding: "STAGING_ARTIFACTS",
-    direction: "bidirectional",
-  },
-]);
+export default syncRepos({
+  github: "elithrar/artifacts-sync",
+  artifacts: "artifacts-sync",
+  artifactsRemote:
+    "https://d458dbe698b8eef41837f941d73bc5b3.artifacts.cloudflare.net/git/default/artifacts-sync.git",
+  direction: "bidirectional",
+});
 ```
 
-A repository without a namespace uses `default` and the `ARTIFACTS` binding. A `namespace/repo` value requires `artifactsBinding`.
+A repository without a namespace uses `default` and the `ARTIFACTS` binding. A `namespace/repo` value requires `artifactsBinding`. `artifactsRemote` supplies the Git URL explicitly while the binding mints short-lived repo tokens.
 
 ## Configure Cloudflare
 
@@ -43,10 +36,6 @@ Keep each Artifacts binding aligned with the namespace in `src/index.ts`:
     "binding": "ARTIFACTS",
     "namespace": "default",
   },
-  {
-    "binding": "STAGING_ARTIFACTS",
-    "namespace": "staging",
-  },
 ]
 ```
 
@@ -54,7 +43,7 @@ The checked-in `wrangler.jsonc` also declares:
 
 - The `SyncCoordinator` SQLite-backed Durable Object and Computer container.
 - The `SyncWorkflow` Workflow binding.
-- One filtered `cf.artifacts.repo.pushed` trigger for each Artifacts repository.
+- A filtered `cf.artifacts.repo.pushed` trigger for the Artifacts repository.
 - Worker logs and traces.
 
 Remove a repository's Artifacts event trigger when its direction is `github-to-artifacts`.
@@ -67,20 +56,20 @@ pnpm types:example
 
 ## Configure GitHub
 
-Add a fine-grained token with access to both GitHub repositories and one shared webhook secret:
+Add a fine-grained token with read/write access to `elithrar/artifacts-sync` and a webhook secret:
 
 ```sh
 pnpm exec wrangler secret put GITHUB_TOKEN --config examples/cloudflare-worker/wrangler.jsonc
 pnpm exec wrangler secret put GITHUB_WEBHOOK_SECRET --config examples/cloudflare-worker/wrangler.jsonc
 ```
 
-Configure each GitHub repository to send JSON `push` webhooks to:
+Configure the GitHub repository to send JSON `push` webhooks to:
 
 ```text
 https://<worker>/webhooks/github
 ```
 
-Use the same webhook secret for both repositories.
+Use the same webhook secret in GitHub and the Worker.
 
 ## Deploy
 

@@ -1,4 +1,4 @@
-import { parseArtifactsRepository, parseGitHubRepository } from "./repositories.js";
+import { git, parseArtifactsRepository, parseGitHubRepository } from "./repositories.js";
 import { z } from "zod";
 import type { ArtifactsRepository, GitHubRepository } from "./types.js";
 
@@ -10,6 +10,7 @@ export interface SyncReposOptions {
   readonly github: GitHubRepositoryInput;
   readonly artifacts: string;
   readonly artifactsBinding?: string;
+  readonly artifactsRemote?: string;
   readonly direction: SyncDirection;
 }
 
@@ -18,6 +19,7 @@ export interface SyncConfiguration {
   readonly github: GitHubRepository;
   readonly artifacts: ArtifactsRepository;
   readonly artifactsBinding: string;
+  readonly artifactsRemote?: string;
   readonly direction: SyncDirection;
 }
 
@@ -29,6 +31,7 @@ const syncReposOptionsSchema = z.strictObject({
   github: z.string(),
   artifacts: z.string(),
   artifactsBinding: z.string().optional(),
+  artifactsRemote: z.string().optional(),
   direction: z.enum(["github-to-artifacts", "artifacts-to-github", "bidirectional"]),
 });
 
@@ -97,13 +100,18 @@ function validateConfiguration(options: SyncReposOptions): SyncConfiguration {
   const github = Object.freeze(parseGitHubRepository(parsed.github));
   const artifacts = Object.freeze(parseArtifactsRepository(parsed.artifacts));
   const artifactsBinding = resolveArtifactsBinding(artifacts, parsed.artifactsBinding);
-  return Object.freeze({
+  const artifactsRemote =
+    parsed.artifactsRemote === undefined ? undefined : git(parsed.artifactsRemote).url;
+  const configuration = {
     id: configurationId(github, artifacts),
     github,
     artifacts,
     artifactsBinding,
     direction: parsed.direction,
-  });
+  };
+  return Object.freeze(
+    artifactsRemote === undefined ? configuration : { ...configuration, artifactsRemote },
+  );
 }
 
 function resolveArtifactsBinding(

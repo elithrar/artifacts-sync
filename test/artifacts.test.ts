@@ -66,6 +66,27 @@ describe("observeArtifactsPush", () => {
     ).toThrow("cannot have zero before and after OIDs");
   });
 
+  it("accepts non-empty Artifacts source identifiers", () => {
+    expect(
+      artifactsPushEventSchema.safeParse({
+        ...event,
+        source: { ...event.source, type: "artifacts" },
+      }).success,
+    ).toBe(true);
+    expect(
+      artifactsPushEventSchema.safeParse({
+        ...event,
+        source: { ...event.source, type: "" },
+      }).success,
+    ).toBe(false);
+    expect(
+      artifactsPushEventSchema.safeParse({
+        ...event,
+        source: { namespace: event.source.namespace, repoName: event.source.repoName },
+      }).success,
+    ).toBe(true);
+  });
+
   it("rejects invalid numeric evidence", () => {
     expect(() => observeArtifactsPush(event, { estimatedPatchBytes: -1 })).toThrow(
       "estimatedPatchBytes must be a non-negative safe integer",

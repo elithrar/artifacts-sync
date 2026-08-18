@@ -80,7 +80,6 @@ const githubSyncJobSchema = z.object({
   configurationId: z.string().min(1),
   event: githubPushPayloadSchema,
 });
-const syncJobSchema = z.union([githubSyncJobSchema, artifactsPushEventSchema]);
 const artifactsBindingSchema = z.object({
   get: z.function(),
   create: z.function().optional(),
@@ -113,14 +112,19 @@ export class SyncCoordinator extends ContainerBase {
       },
       egress: { mode: "direct" },
     });
-    this.#workspace = new Workspace({
-      // SAFETY: Computer only uses the Durable Object storage, sync, and SQL surface.
-      // Cloudflare's generic SQL row signature is wider than Computer's local interface.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-      storage: this.ctx.storage as DurableObjectStorageLike,
-      git: createGitClient(),
-      backends: [this.#backend],
-    });
+    try {
+      this.#workspace = new Workspace({
+        // SAFETY: Computer only uses the Durable Object storage, sync, and SQL surface.
+        // Cloudflare's generic SQL row signature is wider than Computer's local interface.
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
+        storage: this.ctx.storage as DurableObjectStorageLike,
+        git: createGitClient(),
+        backends: [this.#backend],
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`initialize sync workspace: ${message}`, { cause: error });
+    }
   }
 
   async __getWorkspaceStub() {
@@ -166,6 +170,7 @@ export class SyncCoordinator extends ContainerBase {
     return createSyncClient({
       resolver: createCloudflareResolver({
         artifacts: requiredArtifactsBinding(this.env, configured.artifactsBinding),
+        artifactsRemoteFor: () => configured.artifactsRemote,
         githubToken: requiredSecret(this.env.GITHUB_TOKEN, "GITHUB_TOKEN"),
       }),
       workspace: createComputerWorkspaceExecutor(this.#workspace),
@@ -256,8 +261,21 @@ async function receiveGitHubWebhook(
 }
 
 function parseSyncJob(job: SyncJob): SyncJob {
-  const result = syncJobSchema.safeParse(job);
-  if (!result.success) throw new NonRetryableError("Invalid repository push event");
+  const githubDiscriminator = z.object({ kind: z.literal("github") }).safeParse(job);
+  const result = githubDiscriminator.success
+    ? githubSyncJobSchema.safeParse(job)
+    : artifactsPushEventSchema.safeParse(job);
+  if (!result.success) {
+    const issues = result.error.issues
+      .slice(0, 5)
+      .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+      .join("; ");
+    const record = z.record(z.string(), z.unknown()).safeParse(job);
+    const fields = record.success
+      ? `keys=${Object.keys(record.data).toSorted().slice(0, 10).join(",")}`
+      : "not-an-object";
+    throw new NonRetryableError(`Invalid repository push event (${fields}): ${issues}`);
+  }
   return result.data;
 }
 

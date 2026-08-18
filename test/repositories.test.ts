@@ -34,7 +34,7 @@ describe("repository helpers", () => {
 
   it("uses HTTP Basic credentials for Artifacts Git operations", async () => {
     const resolver = createCloudflareResolver({
-      artifacts: bindingWithToken("artifact-token"),
+      artifacts: bindingWithToken("artifact-token?expires=1770000000"),
     });
 
     await expect(
@@ -43,6 +43,22 @@ describe("repository helpers", () => {
       identity: "artifacts:staging/example",
       authorization: `Basic ${btoa("x:artifact-token")}`,
     });
+  });
+
+  it("prefers an explicit Artifacts remote over repo handle metadata", async () => {
+    const resolver = createCloudflareResolver({
+      artifacts: {
+        get: vi.fn(async () => ({
+          remote: "https://wrong.example/repo.git",
+          createToken: vi.fn(async () => ({ plaintext: "artifact-token" })),
+        })),
+      },
+      artifactsRemoteFor: () => "https://artifacts.example/repo.git",
+    });
+
+    await expect(
+      resolver.resolve(parseArtifactsRepository("example"), "read"),
+    ).resolves.toMatchObject({ url: "https://artifacts.example/repo.git" });
   });
 
   it("supports per-repository GitHub tokens without runtime type guessing", async () => {

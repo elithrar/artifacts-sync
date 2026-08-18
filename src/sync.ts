@@ -37,8 +37,8 @@ export function createSyncClient(options: CreateSyncClientOptions): SyncClient {
     syncOptions: SyncOptions,
   ): Promise<PreparedSync> {
     const [resolvedFrom, resolvedTo] = await Promise.all([
-      options.resolver.resolve(from, "read"),
-      options.resolver.resolve(to, "write"),
+      runStage("resolve source repository", () => options.resolver.resolve(from, "read")),
+      runStage("resolve destination repository", () => options.resolver.resolve(to, "write")),
     ]);
     if (resolvedFrom.identity === resolvedTo.identity) {
       throw new Error("Source and destination repositories must be different");
@@ -52,12 +52,16 @@ export function createSyncClient(options: CreateSyncClientOptions): SyncClient {
     }
     const observed =
       mode === "push" && syncOptions.change !== undefined
-        ? await readCurrentRefs(syncOptions.change, resolvedFrom, resolvedTo, refReader)
+        ? await runStage("read current refs", () =>
+            readCurrentRefs(syncOptions.change, resolvedFrom, resolvedTo, refReader),
+          )
         : syncOptions.change;
     const cacheWarm =
       observed === undefined || observed.refs.length === 0
         ? false
-        : ((await options.workspace.hasCache?.(pairKey, observed.refs)) ?? false);
+        : ((await runStage("inspect workspace cache", async () =>
+            options.workspace.hasCache?.(pairKey, observed.refs),
+          )) ?? false);
     const plan = planSync(
       createPlanInput(
         mode,
@@ -90,7 +94,9 @@ export function createSyncClient(options: CreateSyncClientOptions): SyncClient {
       }
       const executor =
         prepared.plan.strategy === "workspace" ? options.workspace : options.container;
-      const result = await executor.execute(prepared.plan, prepared.context);
+      const result = await runStage(`execute ${prepared.plan.strategy} sync`, () =>
+        executor.execute(prepared.plan, prepared.context),
+      );
       return { plan: prepared.plan, executed: true, result };
     },
   };
@@ -151,4 +157,13 @@ async function createPairKey(from: string, to: string): Promise<string> {
   return Array.from(new Uint8Array(digest).slice(0, 12), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+async function runStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${stage}: ${message}`, { cause: error });
+  }
 }

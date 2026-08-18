@@ -18,7 +18,7 @@ export interface ComputerRuntimeLike {
       readonly backend: string;
       readonly encoding: "utf8";
       readonly timeoutMs: number;
-      readonly env: Record<string, string>;
+      readonly stdin: string;
     },
   ) => Promise<{
     result(): Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -30,7 +30,7 @@ export function createComputerContainerExecutor(
   workspace: { readonly runtime: ComputerRuntimeLike },
   options: ComputerContainerExecutorOptions = {},
 ): SyncExecutor {
-  const backend = options.backend ?? "container";
+  const backend = options.backend ?? "container-shell";
   const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
   if (backend.length === 0) throw new Error("Container backend must be non-empty");
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -47,12 +47,12 @@ export function createComputerContainerExecutor(
         return { refs: [], detail: { backend } };
       }
       const command = buildCommand(plan, pendingRefs);
-      const env = createEnvironment(context);
+      const stdin = createInput(context);
       const handle = await workspace.runtime.exec(command, {
         backend,
         encoding: "utf8",
         timeoutMs,
-        env,
+        stdin,
       });
 
       try {
@@ -73,22 +73,55 @@ export function createComputerContainerExecutor(
 
 function buildCommand(plan: SyncPlan, refs: readonly RefChange[]): string {
   const prelude = `set -eu
+IFS= read -r SYNC_SOURCE_URL
+IFS= read -r SYNC_TARGET_URL
+IFS= read -r SYNC_SOURCE_AUTHORIZATION
+IFS= read -r SYNC_TARGET_AUTHORIZATION
 source_git() {
   if [ -n "\${SYNC_SOURCE_AUTHORIZATION:-}" ]; then
-    git -c "http.extraHeader=$SYNC_SOURCE_AUTHORIZATION" "$@"
+    authenticated_git "$SYNC_SOURCE_AUTHORIZATION" "$@"
   else
     git "$@"
   fi
 }
 target_git() {
   if [ -n "\${SYNC_TARGET_AUTHORIZATION:-}" ]; then
-    git -c "http.extraHeader=$SYNC_TARGET_AUTHORIZATION" "$@"
+    authenticated_git "$SYNC_TARGET_AUTHORIZATION" "$@"
   else
     git "$@"
   fi
 }
+authenticated_git() {
+  authorization="$1"
+  shift
+  case "$authorization" in
+    "Basic "*)
+      credentials="$(printf '%s' "\${authorization#Basic }" | base64 -d)"
+      case "$credentials" in
+        *:*) ;;
+        *) echo "Invalid Basic Git authorization" >&2; return 64 ;;
+      esac
+      SYNC_GIT_USERNAME="\${credentials%%:*}" \
+        SYNC_GIT_PASSWORD="\${credentials#*:}" \
+        GIT_ASKPASS="$askpass" \
+        GIT_TERMINAL_PROMPT=0 \
+        git "$@"
+      ;;
+    *)
+      GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader GIT_CONFIG_VALUE_0="$authorization" git "$@"
+      ;;
+  esac
+}
 workdir="$(mktemp -d /tmp/artifacts-sync.XXXXXX)"
-trap 'rm -rf "$workdir"' EXIT`;
+trap 'rm -rf "$workdir"' EXIT
+askpass="$workdir/git-askpass"
+printf '%s\n' '#!/bin/sh' \
+  'case "$1" in' \
+  '  *Username*) printf "%s\\n" "$SYNC_GIT_USERNAME" ;;' \
+  '  *Password*) printf "%s\\n" "$SYNC_GIT_PASSWORD" ;;' \
+  '  *) exit 1 ;;' \
+  'esac' >"$askpass"
+chmod 700 "$askpass"`;
 
   if (plan.mode === "mirror") {
     return `${prelude}
@@ -157,13 +190,17 @@ function forceWithLease(change: RefChange): string {
   return shellQuote(`--force-with-lease=${change.ref}:${expected}`);
 }
 
-function createEnvironment(context: ExecutionContext) {
-  return {
-    SYNC_SOURCE_URL: context.from.url,
-    SYNC_TARGET_URL: context.to.url,
-    SYNC_SOURCE_AUTHORIZATION: context.from.authorization ?? "",
-    SYNC_TARGET_AUTHORIZATION: context.to.authorization ?? "",
-  };
+function createInput(context: ExecutionContext): string {
+  const values = [
+    context.from.url,
+    context.to.url,
+    context.from.authorization ?? "",
+    context.to.authorization ?? "",
+  ];
+  if (values.some((value) => value.includes("\n") || value.includes("\r"))) {
+    throw new Error("Container Git inputs must not contain line breaks");
+  }
+  return `${values.join("\n")}\n`;
 }
 
 function encodeRef(ref: string): string {

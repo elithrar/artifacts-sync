@@ -9,10 +9,6 @@
       "binding": "ARTIFACTS",
       "namespace": "default",
     },
-    {
-      "binding": "STAGING_ARTIFACTS",
-      "namespace": "staging",
-    },
   ],
   "containers": [
     {
@@ -49,20 +45,7 @@
         "type": "cf.artifacts.repo.pushed",
         "filter": {
           "namespace": "default",
-          "repo_name": "example",
-        },
-        "targets": [
-          {
-            "type": "workflow",
-            "workflow_name": "artifacts-sync-example",
-          },
-        ],
-      },
-      {
-        "type": "cf.artifacts.repo.pushed",
-        "filter": {
-          "namespace": "staging",
-          "repo_name": "example",
+          "repo_name": "artifacts-sync",
         },
         "targets": [
           {

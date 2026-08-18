@@ -24,6 +24,10 @@ interface ArtifactsCreateResult {
   readonly token: string;
 }
 
+type ResolvedArtifactsRepo =
+  | { readonly kind: "existing"; readonly repo: ArtifactsRepo }
+  | { readonly kind: "created"; readonly result: ArtifactsCreateResult };
+
 export interface ArtifactsBindingLike {
   get(name: string): Promise<ArtifactsRepo>;
   create?(
@@ -40,6 +44,7 @@ export interface CloudflareResolverOptions {
   readonly artifacts: ArtifactsBindingLike;
   readonly githubToken?: string;
   readonly githubTokenFor?: (repository: GitHubRepository) => Promise<string>;
+  readonly artifactsRemoteFor?: (repository: ArtifactsRepository) => string | undefined;
   readonly artifactTokenTtlSeconds?: number;
   readonly createMissingArtifactsRepositories?: boolean;
 }
@@ -129,19 +134,21 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
         }
         case "artifacts": {
           const resolved = await resolveArtifactsRepo(options, repository.name, access);
-          if ("token" in resolved) {
+          if (resolved.kind === "created") {
             return {
               identity: artifactsIdentity(repository),
-              url: resolved.remote,
-              authorization: basicAuthorization("x", resolved.token),
+              url: resolved.result.remote,
+              authorization: artifactsAuthorization(resolved.result.token),
             };
           }
-          const token = await resolved.createToken(access, ttl);
-          return {
-            identity: artifactsIdentity(repository),
-            url: resolved.remote,
-            authorization: basicAuthorization("x", token.plaintext),
-          };
+          const token = await runRepositoryStage("create Artifacts repository token", () =>
+            resolved.repo.createToken(access, ttl),
+          );
+          return createResolvedRepository(
+            artifactsIdentity(repository),
+            options.artifactsRemoteFor?.(repository) ?? resolved.repo.remote,
+            artifactsAuthorization(token.plaintext),
+          );
         }
         case "git":
           return createResolvedRepository(
@@ -176,12 +183,16 @@ async function resolveArtifactsRepo(
   options: CloudflareResolverOptions,
   name: string,
   access: RepositoryAccess,
-): Promise<ArtifactsRepo | ArtifactsCreateResult> {
+): Promise<ResolvedArtifactsRepo> {
   try {
-    return await options.artifacts.get(name);
+    return { kind: "existing", repo: await options.artifacts.get(name) };
   } catch (error) {
     const notFound = z.object({ code: z.literal("NOT_FOUND") }).safeParse(error).success;
     if (access !== "write" || !options.createMissingArtifactsRepositories || !notFound) {
+      if (!notFound) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`get Artifacts repository: ${message}`, { cause: error });
+      }
       throw error;
     }
     if (options.artifacts.create === undefined) {
@@ -189,7 +200,7 @@ async function resolveArtifactsRepo(
         cause: error,
       });
     }
-    return options.artifacts.create(name);
+    return { kind: "created", result: await options.artifacts.create(name) };
   }
 }
 
@@ -223,6 +234,24 @@ function basicAuthorization(username: string, password: string): string {
     throw new Error("Git credential token must be non-empty and contain no control characters");
   }
   return `Basic ${btoa(`${username}:${password}`)}`;
+}
+
+function artifactsAuthorization(token: string): string {
+  validateOpaqueValue(token, "Artifacts token");
+  const secret = token.split("?expires=", 1)[0];
+  if (secret === undefined || secret.length === 0) {
+    throw new Error("Artifacts token secret must be non-empty");
+  }
+  return basicAuthorization("x", secret);
+}
+
+async function runRepositoryStage<T>(stage: string, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${stage}: ${message}`, { cause: error });
+  }
 }
 
 function hasControlCharacter(value: string): boolean {
