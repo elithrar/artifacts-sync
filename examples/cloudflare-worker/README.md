@@ -1,35 +1,93 @@
 # Cloudflare Worker example
 
-This example wires both push directions into one Workflow:
+This Worker synchronizes two independent repository pairs:
 
-- GitHub `push` webhook → Workflow → Cloudflare Artifacts
-- `cf.artifacts.repo.pushed` → Workflow → GitHub
+- `elithrar/example` ↔ `default/example`
+- `elithrar/example-staging` ↔ `staging/example`
 
-The Workflow routes both directions of the configured repository pair to one `SyncCoordinator` Durable Object. That object owns the persistent Computer Workspace and its lazily started native-Git container.
+Both GitHub webhooks use the same Worker endpoint. Separate Artifacts bindings and event filters identify the two namespaces.
 
-## Configure
+## Configure repository pairs
 
-1. Replace the repository values and Artifacts namespace in `wrangler.jsonc`.
-2. Generate binding types:
+Edit `src/index.ts`:
 
-   ```sh
-   pnpm types:example
-   ```
+```ts
+import { syncRepos } from "@elithrar/artifacts-sync";
 
-3. Add secrets:
+export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
 
-   ```sh
-   pnpm wrangler secret put GITHUB_TOKEN --config examples/cloudflare-worker/wrangler.jsonc
-   pnpm wrangler secret put GITHUB_WEBHOOK_SECRET --config examples/cloudflare-worker/wrangler.jsonc
-   ```
+export default syncRepos([
+  {
+    github: "elithrar/example",
+    artifacts: "example",
+    direction: "bidirectional",
+  },
+  {
+    github: "elithrar/example-staging",
+    artifacts: "staging/example",
+    artifactsBinding: "STAGING_ARTIFACTS",
+    direction: "bidirectional",
+  },
+]);
+```
 
-4. Configure a GitHub `push` webhook to `https://<worker>/webhooks/github` using the same secret.
-5. Deploy with `pnpm deploy:example`.
+A repository without a namespace uses `default` and the `ARTIFACTS` binding. A `namespace/repo` value requires `artifactsBinding`.
 
-The checked-in Artifacts event trigger is account-side configuration. Limit its filter to the configured namespace and repository before deployment.
+## Configure Cloudflare
 
-Configure the GitHub webhook to send `application/json`. The Worker accepts only `push` events, requires `X-GitHub-Delivery`, verifies `X-Hub-Signature-256`, validates the payload schema, and rejects bodies above 10 MiB before starting a Workflow.
+Keep each Artifacts binding aligned with the namespace in `src/index.ts`:
 
-## Security
+```jsonc
+"artifacts": [
+  {
+    "binding": "ARTIFACTS",
+    "namespace": "default",
+  },
+  {
+    "binding": "STAGING_ARTIFACTS",
+    "namespace": "staging",
+  },
+]
+```
 
-For this static-secret example, use a fine-grained token limited to the configured repository. GitHub App installation tokens expire, so production App integrations should mint them on demand through the resolver's `githubTokenFor` callback. The Artifacts resolver mints a short-lived read or write token for each sync. Git credentials use HTTP Basic authentication and are passed through request headers or the container environment; they are never included in a returned plan or command string.
+The checked-in `wrangler.jsonc` also declares:
+
+- The `SyncCoordinator` SQLite-backed Durable Object and Computer container.
+- The `SyncWorkflow` Workflow binding.
+- One filtered `cf.artifacts.repo.pushed` trigger for each Artifacts repository.
+- Worker logs and traces.
+
+Remove a repository's Artifacts event trigger when its direction is `github-to-artifacts`.
+
+Generate binding types after editing `wrangler.jsonc`:
+
+```sh
+pnpm types:example
+```
+
+## Configure GitHub
+
+Add a fine-grained token with access to both GitHub repositories and one shared webhook secret:
+
+```sh
+pnpm exec wrangler secret put GITHUB_TOKEN --config examples/cloudflare-worker/wrangler.jsonc
+pnpm exec wrangler secret put GITHUB_WEBHOOK_SECRET --config examples/cloudflare-worker/wrangler.jsonc
+```
+
+Configure each GitHub repository to send JSON `push` webhooks to:
+
+```text
+https://<worker>/webhooks/github
+```
+
+Use the same webhook secret for both repositories.
+
+## Deploy
+
+```sh
+pnpm deploy:example
+```
+
+An accepted GitHub delivery returns HTTP `202` with the pair-specific Workflow ID. The Workflow output reports the repository pair, whether work ran, the selected strategy, affected refs, and the planning reason.
+
+Duplicate GitHub deliveries reuse the same pair-specific ID and do not create another Workflow instance.

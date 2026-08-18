@@ -44,27 +44,55 @@ export interface CloudflareResolverOptions {
   readonly createMissingArtifactsRepositories?: boolean;
 }
 
-export function github(slug: string): GitHubRepository {
-  const parts = slug.split("/");
-  const owner = parts[0];
-  const repo = parts[1];
-  if (
-    parts.length !== 2 ||
-    owner === undefined ||
-    repo === undefined ||
-    !/^[A-Za-z\d](?:[A-Za-z\d-]{0,37}[A-Za-z\d])?$/.test(owner) ||
-    !/^[A-Za-z\d._-]+$/.test(repo)
-  ) {
-    throw new Error('GitHub repository must use the "owner/repo" form');
+const githubRepositorySchema = z
+  .string()
+  .regex(
+    /^[A-Za-z\d](?:[A-Za-z\d-]{0,37}[A-Za-z\d])?\/[A-Za-z\d._-]+$/,
+    'GitHub repository must use the "owner/repo" form',
+  )
+  .transform((slug): GitHubRepository => {
+    const separator = slug.indexOf("/");
+    return {
+      kind: "github",
+      owner: slug.slice(0, separator),
+      repo: slug.slice(separator + 1),
+    };
+  });
+const artifactsRepositorySchema = z
+  .string()
+  .regex(
+    /^(?:[A-Za-z\d][A-Za-z\d._-]*\/)?[A-Za-z\d][A-Za-z\d._-]*$/,
+    'Artifacts repository must use the "repo" or "namespace/repo" form',
+  )
+  .transform((value): ArtifactsRepository => {
+    const separator = value.indexOf("/");
+    if (separator === -1) return { kind: "artifacts", namespace: "default", name: value };
+    return {
+      kind: "artifacts",
+      namespace: value.slice(0, separator),
+      name: value.slice(separator + 1),
+    };
+  });
+
+export function parseGitHubRepository(slug: string): GitHubRepository {
+  const result = githubRepositorySchema.safeParse(slug);
+  if (!result.success) {
+    throw new Error(
+      result.error.issues[0]?.message ?? 'GitHub repository must use the "owner/repo" form',
+    );
   }
-  return { kind: "github", owner, repo };
+  return result.data;
 }
 
-export function artifacts(name: string): ArtifactsRepository {
-  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error("Invalid Artifacts repository name");
+export function parseArtifactsRepository(value: string): ArtifactsRepository {
+  const result = artifactsRepositorySchema.safeParse(value);
+  if (!result.success) {
+    throw new Error(
+      result.error.issues[0]?.message ??
+        'Artifacts repository must use the "repo" or "namespace/repo" form',
+    );
   }
-  return { kind: "artifacts", name };
+  return result.data;
 }
 
 export function git(
@@ -103,14 +131,14 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
           const resolved = await resolveArtifactsRepo(options, repository.name, access);
           if ("token" in resolved) {
             return {
-              identity: `artifacts:${repository.name}`,
+              identity: artifactsIdentity(repository),
               url: resolved.remote,
               authorization: basicAuthorization("x", resolved.token),
             };
           }
           const token = await resolved.createToken(access, ttl);
           return {
-            identity: `artifacts:${repository.name}`,
+            identity: artifactsIdentity(repository),
             url: resolved.remote,
             authorization: basicAuthorization("x", token.plaintext),
           };
@@ -126,6 +154,10 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
       }
     },
   };
+}
+
+function artifactsIdentity(repository: ArtifactsRepository): string {
+  return `artifacts:${repository.namespace}/${repository.name}`;
 }
 
 function assertNever(_value: never): never {

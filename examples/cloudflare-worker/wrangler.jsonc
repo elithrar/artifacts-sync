@@ -4,14 +4,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-18",
   "compatibility_flags": ["nodejs_compat"],
-  "vars": {
-    "GITHUB_REPOSITORY": "elithrar/example",
-    "ARTIFACTS_REPOSITORY": "example",
-  },
   "artifacts": [
     {
       "binding": "ARTIFACTS",
       "namespace": "default",
+    },
+    {
+      "binding": "STAGING_ARTIFACTS",
+      "namespace": "staging",
     },
   ],
   "containers": [
@@ -30,12 +30,12 @@
       },
     ],
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["SyncCoordinator"],
+  "exports": {
+    "SyncCoordinator": {
+      "type": "durable-object",
+      "storage": "sqlite",
     },
-  ],
+  },
   "workflows": [
     {
       "name": "artifacts-sync-example",
@@ -49,6 +49,19 @@
         "type": "cf.artifacts.repo.pushed",
         "filter": {
           "namespace": "default",
+          "repo_name": "example",
+        },
+        "targets": [
+          {
+            "type": "workflow",
+            "workflow_name": "artifacts-sync-example",
+          },
+        ],
+      },
+      {
+        "type": "cf.artifacts.repo.pushed",
+        "filter": {
+          "namespace": "staging",
           "repo_name": "example",
         },
         "targets": [

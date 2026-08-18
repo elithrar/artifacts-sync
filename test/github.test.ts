@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { inspectGitHubPush } from "../src/github.js";
+import { handleGitHubWebhook, inspectGitHubPush } from "../src/github.js";
 import type { GitHubPushPayload } from "../src/schemas.js";
 
 const payload: GitHubPushPayload = {
@@ -107,3 +107,125 @@ describe("inspectGitHubPush", () => {
     );
   });
 });
+
+describe("handleGitHubWebhook", () => {
+  it("verifies and enqueues a push", async () => {
+    const body = JSON.stringify(payload);
+    const enqueue = createEnqueue();
+    const response = await handleGitHubWebhook(
+      await webhookRequest(body, "push", await sign(body)),
+      webhookOptions(enqueue),
+    );
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toEqual({ accepted: true, id: "workflow-1" });
+    expect(enqueue).toHaveBeenCalledWith("delivery-1", "pair-1", payload);
+  });
+
+  it("accepts a signed GitHub ping without creating a sync", async () => {
+    const body = JSON.stringify({ zen: "Keep it logically awesome." });
+    const enqueue = createEnqueue();
+    const response = await handleGitHubWebhook(
+      await webhookRequest(body, "ping", await sign(body)),
+      webhookOptions(enqueue),
+    );
+
+    expect(response.status).toBe(204);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid signatures before parsing the payload", async () => {
+    const enqueue = createEnqueue();
+    const response = await handleGitHubWebhook(
+      await webhookRequest("not json", "push", `sha256=${"0".repeat(64)}`),
+      webhookOptions(enqueue),
+    );
+
+    expect(response.status).toBe(401);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects pushes for a different repository", async () => {
+    const body = JSON.stringify({
+      ...payload,
+      repository: { ...payload.repository, full_name: "elithrar/other" },
+    });
+    const enqueue = createEnqueue();
+    const response = await handleGitHubWebhook(
+      await webhookRequest(body, "push", await sign(body)),
+      webhookOptions(enqueue),
+    );
+
+    expect(response.status).toBe(404);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it("rejects an advertised body above the webhook limit", async () => {
+    const enqueue = createEnqueue();
+    const response = await handleGitHubWebhook(
+      new Request("https://sync.example/webhooks/github", {
+        method: "POST",
+        body: "{}",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(10 * 1024 * 1024 + 1),
+          "x-github-delivery": "delivery-1",
+          "x-github-event": "push",
+          "x-hub-signature-256": `sha256=${"0".repeat(64)}`,
+        },
+      }),
+      webhookOptions(enqueue),
+    );
+
+    expect(response.status).toBe(413);
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+});
+
+type Enqueue = (
+  delivery: string,
+  configurationId: string,
+  event: GitHubPushPayload,
+) => Promise<string>;
+
+function createEnqueue() {
+  return vi.fn<Enqueue>().mockResolvedValue("workflow-1");
+}
+
+function webhookOptions(enqueue: Enqueue) {
+  return {
+    secret: "webhook-secret",
+    route(repository: string): string | undefined {
+      return repository.toLowerCase() === "elithrar/example" ? "pair-1" : undefined;
+    },
+    enqueue,
+  };
+}
+
+async function webhookRequest(body: string, event: string, signature: string): Promise<Request> {
+  return new Request("https://sync.example/webhooks/github", {
+    method: "POST",
+    body,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "x-github-delivery": "delivery-1",
+      "x-github-event": event,
+      "x-hub-signature-256": signature,
+    },
+  });
+}
+
+async function sign(body: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode("webhook-secret"),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)),
+  );
+  const hex = Array.from(signature, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `sha256=${hex}`;
+}

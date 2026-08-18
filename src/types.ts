@@ -11,6 +11,7 @@ export interface GitHubRepository {
 
 export interface ArtifactsRepository {
   readonly kind: "artifacts";
+  readonly namespace: string;
   readonly name: string;
 }
 

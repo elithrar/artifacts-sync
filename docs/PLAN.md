@@ -2,26 +2,35 @@
 
 ## Goal
 
-Synchronize Git refs between GitHub and Cloudflare Artifacts after a push. Keep the public API directional and small:
+Synchronize pushed Git refs between GitHub and Cloudflare Artifacts with a small, deployment-oriented API:
 
 ```ts
-await client.sync(from, to, options);
+export default syncRepos({
+  github: "elithrar/project",
+  artifacts: "project",
+  direction: "bidirectional",
+});
 ```
 
-Bidirectional setups create two directional subscriptions. They are not conflict-merging systems.
+One Worker can configure multiple independent repository pairs. Bidirectional pairs create two directional routes; they are not conflict-merging systems.
 
 ## Decisions
 
-- Synchronize the refs named by a push by default. Use `mode: "mirror"` explicitly for full reconciliation, including deletions and force updates.
-- Read source and destination refs before executing. Drop stale events whose source ref has already moved, and return a no-op when the destination already equals the triggering object. This prevents out-of-order delivery from regressing refs and suppresses sync-generated webhook loops without modifying commits.
+- Accept plain repository strings and validate them during module initialization. Keep normalized repository types internal.
+- Accept one pair or an array of pairs.
+- Treat `namespace/repo` as the stable Artifacts identity. A bare repository name means `default/repo`.
+- Default the `default` namespace to the `ARTIFACTS` binding. Require an explicit `artifactsBinding` for other namespaces.
+- Reject duplicate pairs, conflicting namespace bindings, and fan-out from a source repository.
+- Synchronize only refs named by a push. Full repository mirroring is not part of the public API.
+- Read source and destination refs before executing. Drop stale events whose source ref has moved and return a no-op when the destination already equals the triggering object.
 - Use a persistent `@cloudflare/computer` Workspace and its isomorphic-git client only for bounded changes.
-- Use the Computer container backend and native Git for full, large, forced, or uncertain transfers.
+- Use the Computer container backend and native Git for large, forced, or uncertain transfers.
 - Treat missing evidence as large. Commit count is never a byte-size estimate.
-- Keep Computer behind executor interfaces because the package is currently preview-only and its API is unstable.
+- Keep Computer behind executor interfaces because the package is preview-only and its API is unstable.
 
 ## Automatic strategy
 
-The initial workspace limits are:
+The initial Workspace limits are:
 
 | Signal                       | Workspace limit |
 | ---------------------------- | --------------: |
@@ -30,42 +39,66 @@ The initial workspace limits are:
 | Complete UTF-8 patch bytes   |          16 MiB |
 | Cold-cache source repository |          16 MiB |
 
-The workspace strategy also requires a fast-forward update, complete inspection data, and either every source base object in the ordered pair cache or a source repository below the cold-cache limit. Cache-directory existence alone is not warm evidence. Ref deletions do not need source objects. Any force push, mirror, truncation, binary/unknown patch, or unknown size selects the container.
+The Workspace strategy also requires a fast-forward update, complete inspection data, and either every source base object in the ordered pair cache or a source repository below the cold-cache limit. Cache-directory existence alone is not warm evidence. Ref deletions do not need source objects. Any force push, truncation, binary or unknown patch, or unknown size selects the container.
 
-GitHub push inspection uses the Compare API. It accepts a patch estimate only when every nondeleted file includes a complete patch and bounds the streamed response even when `Content-Length` is absent or wrong. Patch bytes are a routing signal, not Git pack bytes. Cloudflare Artifacts push events currently expose commit counts but no byte estimate, so Artifacts-originated changes default to the container unless the caller supplies trusted `estimatedPatchBytes` evidence.
+GitHub push inspection uses the Compare API. It accepts a patch estimate only when every nondeleted file includes a complete patch and bounds the streamed response even when `Content-Length` is absent or wrong. Patch bytes are a routing signal, not Git pack bytes. Current Artifacts push events expose commit counts but no byte estimate, so Artifacts-originated changes default to the container.
 
 ## Runtime topology
 
-1. A GitHub webhook Worker or `cf.artifacts.repo.pushed` event starts a Workflow.
-2. The webhook boundary validates the payload; GitHub pushes are inspected in the pair coordinator.
-3. A Durable Object for the configured pair serializes both directions and owns the Computer Workspace.
-4. The client confirms source refs still match the event, then reads destination refs without overwriting source push history.
-5. The planner selects no-op, Workspace Git, or Computer container Git, then executes the plan.
+1. The module initializes an immutable registry of validated repository pairs.
+2. The returned Worker verifies GitHub webhooks and resolves `repository.full_name` to one pair.
+3. Cloudflare sends `cf.artifacts.repo.pushed` events directly to the exported Workflow, which resolves `source.namespace` and `source.repoName` to one pair.
+4. Each routed job carries the stable pair ID. Unconfigured Artifacts events return a no-op result.
+5. A Durable Object named for that pair serializes both directions and owns its Computer Workspace.
+6. The coordinator selects the Artifacts namespace binding configured for the pair and builds the internal repository resolver.
+7. The sync engine confirms source refs still match the event, reads destination refs, plans the operation, and executes through the Workspace or container.
 
-One Durable Object per configured repository pair avoids cross-repository contention and prevents opposite directions from executing concurrently. Computer keeps a separate ordered cache for each direction inside that coordinator.
+One Durable Object per pair prevents opposite directions from running concurrently without creating contention between unrelated pairs. Computer maintains a separate ordered cache for each direction inside that coordinator.
 
-## API
+## Public API
 
 ```ts
-const client = createSyncClient({
-  resolver,
-  workspace: createComputerWorkspaceExecutor(workspace),
-  container: createComputerContainerExecutor(workspace),
-});
+import { syncRepos } from "@elithrar/artifacts-sync";
 
-const plan = await client.plan(from, to, { change });
-const result = await client.sync(from, to, { change });
+export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
+
+export default syncRepos([
+  {
+    github: "elithrar/project-a",
+    artifacts: "project-a",
+    direction: "bidirectional",
+  },
+  {
+    github: "elithrar/project-b",
+    artifacts: "staging/project-b",
+    artifactsBinding: "STAGING_ARTIFACTS",
+    direction: "github-to-artifacts",
+  },
+]);
 ```
 
-`strategy: "workspace" | "container"` is available as an explicit override. Overrides remain visible in the returned plan.
+The root package exposes `syncRepos` and the three Cloudflare runtime classes required by Wrangler. Repository constructors, event schemas, planners, resolvers, executors, and the sync client remain implementation details.
 
-The third argument is required: pass a push `change` observation or `{ mode: "mirror" }`. The type contract prevents an omitted option from silently becoming a destructive mirror. The Workspace override rejects mirrors and SHA-256 repositories because Computer's current isomorphic-git path supports SHA-1 objects only.
+`direction` accepts `"github-to-artifacts"`, `"artifacts-to-github"`, or `"bidirectional"`.
+
+## Deployment configuration
+
+- Every Artifacts namespace has its own Worker binding.
+- `ARTIFACTS` is the default binding for the `default` namespace.
+- One `GITHUB_TOKEN` must cover all configured GitHub repositories.
+- GitHub repositories use one `GITHUB_WEBHOOK_SECRET` and send pushes to `/webhooks/github`.
+- Artifacts push event filters target the shared Workflow and carry namespace and repository identity in the event.
+- `SYNC_COORDINATOR` and `SYNC_WORKFLOW` remain conventional binding names.
 
 ## Follow-ups before production
 
 - Run repository-size and pack-memory benchmarks against real workloads.
-- Add an Artifacts tree/blob-size inspector when the binding exposes a bounded object-reading API.
-- Add cache eviction or rebuild policy because Computer's isomorphic-git pack cache is unbounded and has no `git gc` support.
-- Pin and test Computer upgrades—the dependency is preview-only.
-- Define conflict policy for simultaneous human pushes. The default remains fast-forward only; force reconciliation requires `mode: "mirror"` or an explicit container override.
+- Add an Artifacts tree or blob-size inspector when the binding exposes a bounded object-reading API.
+- Add a cache eviction or rebuild policy because Computer's isomorphic-git pack cache is unbounded and has no `git gc` support.
+- Pin and test Computer upgrades.
+- Define conflict policy for simultaneous human pushes. The default remains fast-forward only; the public API does not provide forced reconciliation.
 - Add post-push destination verification when the upstream APIs expose a cheap, reliable consistency signal.
+
+## Currently unsupported
+
+- Fan-out from one source repository to multiple destinations.

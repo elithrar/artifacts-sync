@@ -3,7 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createCloudflareResolver,
   git,
-  github,
+  parseArtifactsRepository,
+  parseGitHubRepository,
   type ArtifactsBindingLike,
 } from "../src/repositories.js";
 
@@ -23,7 +24,9 @@ describe("repository helpers", () => {
       githubToken: "github-token",
     });
 
-    await expect(resolver.resolve(github("elithrar/example"), "read")).resolves.toMatchObject({
+    await expect(
+      resolver.resolve(parseGitHubRepository("elithrar/example"), "read"),
+    ).resolves.toMatchObject({
       identity: "github:elithrar/example",
       authorization: `Basic ${btoa("x-access-token:github-token")}`,
     });
@@ -35,8 +38,11 @@ describe("repository helpers", () => {
     });
 
     await expect(
-      resolver.resolve({ kind: "artifacts", name: "example" }, "write"),
-    ).resolves.toMatchObject({ authorization: `Basic ${btoa("x:artifact-token")}` });
+      resolver.resolve(parseArtifactsRepository("staging/example"), "write"),
+    ).resolves.toMatchObject({
+      identity: "artifacts:staging/example",
+      authorization: `Basic ${btoa("x:artifact-token")}`,
+    });
   });
 
   it("supports per-repository GitHub tokens without runtime type guessing", async () => {
@@ -46,7 +52,7 @@ describe("repository helpers", () => {
       githubTokenFor,
     });
 
-    await resolver.resolve(github("elithrar/example"), "read");
+    await resolver.resolve(parseGitHubRepository("elithrar/example"), "read");
     expect(githubTokenFor).toHaveBeenCalledWith({
       kind: "github",
       owner: "elithrar",
@@ -69,16 +75,18 @@ describe("repository helpers", () => {
       createMissingArtifactsRepositories: true,
     });
 
-    await expect(
-      resolver.resolve({ kind: "artifacts", name: "new" }, "write"),
-    ).resolves.toMatchObject({ authorization: `Basic ${btoa("x:initial-token")}` });
-    await expect(resolver.resolve({ kind: "artifacts", name: "new" }, "read")).rejects.toEqual({
+    await expect(resolver.resolve(parseArtifactsRepository("new"), "write")).resolves.toMatchObject(
+      { authorization: `Basic ${btoa("x:initial-token")}` },
+    );
+    await expect(resolver.resolve(parseArtifactsRepository("new"), "read")).rejects.toEqual({
       code: "NOT_FOUND",
     });
   });
 
   it("rejects unsafe remote URLs and invalid token configuration", () => {
-    expect(() => github("owner/repo?token=secret")).toThrow('must use the "owner/repo" form');
+    expect(() => parseGitHubRepository("owner/repo?token=secret")).toThrow(
+      'must use the "owner/repo" form',
+    );
     expect(() => git("http://example.com/repo.git")).toThrow("must use HTTPS");
     expect(() => git("https://token@example.com/repo.git")).toThrow(
       "Pass Git credentials through authorization",
