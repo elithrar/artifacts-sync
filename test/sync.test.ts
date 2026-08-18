@@ -36,7 +36,7 @@ const change: ChangeObservation = {
   sourceSizeBytes: null,
 };
 
-function setup(targetOid: string | null) {
+function setup(targetOid: string | null, sourceOid: string | null = change.refs[0]!.after) {
   const resolver: RepositoryResolver = {
     resolve: vi.fn(async (repository) =>
       repository.kind === "git" && repository.identity === source.identity ? source : target,
@@ -49,7 +49,11 @@ function setup(targetOid: string | null) {
   const hasCache = vi.fn<NonNullable<SyncExecutor["hasCache"]>>(async () => true);
   const client = createSyncClient({
     resolver,
-    refs: { read: vi.fn(async () => targetOid) },
+    refs: {
+      read: vi.fn(async (repository) =>
+        repository.identity === source.identity ? sourceOid : targetOid,
+      ),
+    },
     workspace: {
       hasCache,
       execute: workspaceExecute,
@@ -101,5 +105,22 @@ describe("createSyncClient", () => {
     await expect(client.sync(from, from, { mode: "mirror" })).rejects.toThrow(
       "Source and destination repositories must be different",
     );
+  });
+
+  it("drops a stale event instead of regressing a ref after a newer push", async () => {
+    const { client, workspaceExecute, containerExecute, hasCache } = setup(
+      "a".repeat(40),
+      "c".repeat(40),
+    );
+
+    const result = await client.sync(from, to, { change });
+
+    expect(result).toMatchObject({
+      executed: false,
+      plan: { strategy: "noop", reason: "No current ref changes remain", refs: [] },
+    });
+    expect(hasCache).not.toHaveBeenCalled();
+    expect(workspaceExecute).not.toHaveBeenCalled();
+    expect(containerExecute).not.toHaveBeenCalled();
   });
 });

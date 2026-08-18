@@ -8,11 +8,11 @@
     "type": "git",
     "url": "git+https://github.com/elithrar/artifacts-sync.git"
   },
-  "sideEffects": false,
   "files": [
     "dist"
   ],
   "type": "module",
+  "sideEffects": false,
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm types:check:example && pnpm test && pnpm build",
     "deploy:example": "pnpm build && wrangler deploy --config examples/cloudflare-worker/wrangler.jsonc",
     "dev:example": "pnpm build && wrangler dev --config examples/cloudflare-worker/wrangler.jsonc",
     "format": "oxfmt --write .",
@@ -31,7 +31,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p examples/cloudflare-worker/tsconfig.json",
-    "types:example": "wrangler types --config examples/cloudflare-worker/wrangler.jsonc examples/cloudflare-worker/worker-configuration.d.ts"
+    "types:check:example": "wrangler types --check --include-runtime false --config examples/cloudflare-worker/wrangler.jsonc examples/cloudflare-worker/worker-configuration.d.ts",
+    "types:example": "wrangler types --include-runtime false --config examples/cloudflare-worker/wrangler.jsonc examples/cloudflare-worker/worker-configuration.d.ts"
   },
   "dependencies": {
     "@cloudflare/computer": "0.2.1",

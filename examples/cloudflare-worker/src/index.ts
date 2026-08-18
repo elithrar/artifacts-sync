@@ -169,10 +169,12 @@ export default {
     const event = parseGitHubPush(body);
     if (event === null) return new Response("Invalid GitHub push payload", { status: 400 });
 
-    await env.SYNC_WORKFLOW.create({
-      id: delivery,
-      params: { kind: "github", event },
-    });
+    await env.SYNC_WORKFLOW.createBatch([
+      {
+        id: delivery,
+        params: { kind: "github", event },
+      },
+    ]);
     return Response.json({ accepted: true }, { status: 202 });
   },
 } satisfies ExportedHandler<RuntimeEnv>;

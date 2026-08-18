@@ -2,7 +2,7 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "artifacts-sync-example",
   "main": "src/index.ts",
-  "compatibility_date": "2026-08-17",
+  "compatibility_date": "2026-08-18",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "GITHUB_REPOSITORY": "elithrar/example",
@@ -49,12 +49,14 @@
         "type": "cf.artifacts.repo.pushed",
         "filter": {
           "namespace": "default",
-          "repoName": "example",
+          "repo_name": "example",
         },
-        "target": {
-          "scriptName": "artifacts-sync-example",
-          "workflowName": "artifacts-sync-example",
-        },
+        "targets": [
+          {
+            "type": "workflow",
+            "workflow_name": "artifacts-sync-example",
+          },
+        ],
       },
     ],
   },

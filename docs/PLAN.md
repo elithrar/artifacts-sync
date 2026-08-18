@@ -13,7 +13,7 @@ Bidirectional setups create two directional subscriptions. They are not conflict
 ## Decisions
 
 - Synchronize the refs named by a push by default. Use `mode: "mirror"` explicitly for full reconciliation, including deletions and force updates.
-- Read the destination ref before executing. If its object ID already equals the triggering object ID, return a no-op. This suppresses sync-generated webhook loops without modifying commits.
+- Read source and destination refs before executing. Drop stale events whose source ref has already moved, and return a no-op when the destination already equals the triggering object. This prevents out-of-order delivery from regressing refs and suppresses sync-generated webhook loops without modifying commits.
 - Use a persistent `@cloudflare/computer` Workspace and its isomorphic-git client only for bounded changes.
 - Use the Computer container backend and native Git for full, large, forced, or uncertain transfers.
 - Treat missing evidence as large. Commit count is never a byte-size estimate.
@@ -39,7 +39,7 @@ GitHub push inspection uses the Compare API. It accepts a patch estimate only wh
 1. A GitHub webhook Worker or `cf.artifacts.repo.pushed` event starts a Workflow.
 2. The webhook boundary validates the payload; GitHub pushes are inspected in the pair coordinator.
 3. A Durable Object for the configured pair serializes both directions and owns the Computer Workspace.
-4. The client reads destination refs without overwriting source push history.
+4. The client confirms source refs still match the event, then reads destination refs without overwriting source push history.
 5. The planner selects no-op, Workspace Git, or Computer container Git, then executes the plan.
 
 One Durable Object per configured repository pair avoids cross-repository contention and prevents opposite directions from executing concurrently. Computer keeps a separate ordered cache for each direction inside that coordinator.
@@ -59,7 +59,7 @@ const result = await client.sync(from, to, { change });
 
 `strategy: "workspace" | "container"` is available as an explicit override. Overrides remain visible in the returned plan.
 
-The third argument is required: pass a push `change` observation or `{ mode: "mirror" }`. The type contract prevents an omitted option from silently becoming a destructive mirror. The Workspace override rejects mirrors and empty ref sets because that executor cannot implement them.
+The third argument is required: pass a push `change` observation or `{ mode: "mirror" }`. The type contract prevents an omitted option from silently becoming a destructive mirror. The Workspace override rejects mirrors and SHA-256 repositories because Computer's current isomorphic-git path supports SHA-1 objects only.
 
 ## Follow-ups before production
 

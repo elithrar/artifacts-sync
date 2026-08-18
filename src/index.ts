@@ -6,6 +6,7 @@ export type {
   ComputerRuntimeLike,
 } from "./executors/computer-container.js";
 export { createComputerWorkspaceExecutor } from "./executors/computer-workspace.js";
+export type { ComputerWorkspaceLike } from "./executors/computer-workspace.js";
 export { inspectGitHubPush } from "./github.js";
 export type { InspectGitHubPushOptions } from "./github.js";
 export { DEFAULT_SYNC_LIMITS, planSync } from "./plan.js";

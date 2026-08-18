@@ -78,12 +78,13 @@ describe("repository helpers", () => {
   });
 
   it("rejects unsafe remote URLs and invalid token configuration", () => {
-    expect(() => github("owner/repo?token=secret")).toThrow(
-      'GitHub repository must be "owner/repo"',
-    );
+    expect(() => github("owner/repo?token=secret")).toThrow('must use the "owner/repo" form');
     expect(() => git("http://example.com/repo.git")).toThrow("must use HTTPS");
     expect(() => git("https://token@example.com/repo.git")).toThrow(
       "Pass Git credentials through authorization",
+    );
+    expect(() => git("https://example.com/repo.git?token=secret")).toThrow(
+      "must not contain query parameters or fragments",
     );
     expect(() => git("https://example.com/repo.git", { authorization: "Basic token\n" })).toThrow(
       "Git authorization must be non-empty and contain no control characters",

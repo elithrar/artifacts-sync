@@ -16,24 +16,46 @@ export const DEFAULT_SYNC_LIMITS: SyncLimits = Object.freeze({
   coldSourceBytes: 16 * 1024 * 1024,
 });
 
-export interface PlanSyncInput {
-  readonly change?: ChangeObservation;
-  readonly mode: SyncMode;
+interface PlanSyncBehavior {
   readonly strategy: SyncStrategy;
   readonly limits?: Partial<SyncLimits>;
   readonly cacheWarm: boolean;
 }
 
+interface PlanPushSyncInput extends PlanSyncBehavior {
+  readonly change: ChangeObservation;
+  readonly mode: "push";
+}
+
+interface PlanMirrorSyncInput extends PlanSyncBehavior {
+  readonly change?: never;
+  readonly mode: "mirror";
+}
+
+export type PlanSyncInput = PlanPushSyncInput | PlanMirrorSyncInput;
+
 export function planSync(input: PlanSyncInput): SyncPlan {
   const limits: SyncLimits = { ...DEFAULT_SYNC_LIMITS, ...input.limits };
   validateLimits(limits);
   if (input.change !== undefined) validateObservation(input.change);
+  if (input.mode === "push" && input.change === undefined) {
+    throw new Error("Push sync requires a change observation");
+  }
 
   const refs = input.change?.refs ?? [];
-  if (input.mode === "push" && refs.length === 0) {
-    throw new Error("Push sync requires at least one observed ref change");
-  }
   const estimate = estimateChange(input.change, input.cacheWarm);
+
+  if (input.mode === "push" && refs.length === 0) {
+    return createPlan(
+      input.mode,
+      refs,
+      estimate,
+      limits,
+      "noop",
+      "No current ref changes remain",
+      false,
+    );
+  }
 
   if (input.mode === "push" && refs.length > 0 && refs.every(isNoop)) {
     return createPlan(
@@ -98,8 +120,8 @@ function validateStrategyCapability(
   if (strategy === "workspace" && mode === "mirror") {
     throw new Error("The workspace strategy cannot mirror repositories; use container");
   }
-  if (strategy === "workspace" && refs.length === 0) {
-    throw new Error("The workspace strategy requires at least one observed ref change");
+  if (strategy === "workspace" && refs.some(usesSha256)) {
+    throw new Error("The workspace strategy supports SHA-1 repositories only; use container");
   }
 }
 
@@ -111,6 +133,9 @@ function automaticContainerReason(input: PlanSyncInput, limits: SyncLimits): str
   if (!input.change.complete) return "Push inspection was truncated or incomplete";
   if (input.change.refs.length > limits.refs) {
     return `Changed ref count exceeds the workspace limit of ${limits.refs}`;
+  }
+  if (input.change.refs.some(usesSha256)) {
+    return "SHA-256 object IDs require native Git";
   }
   if (input.change.refs.some((change) => change.forced !== false)) {
     return "Force-push status is true or unknown";
@@ -180,6 +205,11 @@ function isNoop(change: RefChange): boolean {
   );
 }
 
+function usesSha256(change: RefChange): boolean {
+  if (change.before?.length === 64 || change.after?.length === 64) return true;
+  return change.destination.status === "present" && change.destination.oid.length === 64;
+}
+
 function validateLimits(limits: SyncLimits): void {
   validatePositiveInteger(limits.refs, "limits.refs");
   validatePositiveInteger(limits.commits, "limits.commits");
@@ -196,14 +226,19 @@ function validateObservation(observation: ChangeObservation): void {
     uniqueRefs.add(change.ref);
     validateOptionalOid(change.before);
     validateOptionalOid(change.after);
-    if (change.destination.status === "present") gitOidSchema.parse(change.destination.oid);
+    if (change.destination.status === "present") validateObjectOid(change.destination.oid);
     validateOptionalNonNegativeInteger(change.commitCount, "change.commitCount");
     validateOptionalNonNegativeInteger(change.estimatedPatchBytes, "change.estimatedPatchBytes");
   }
 }
 
 function validateOptionalOid(value: string | null): void {
-  if (value !== null) gitOidSchema.parse(value);
+  if (value !== null) validateObjectOid(value);
+}
+
+function validateObjectOid(value: string): void {
+  gitOidSchema.parse(value);
+  if (/^0+$/.test(value)) throw new Error("Git object OIDs cannot be all zeroes; use null");
 }
 
 function validateOptionalNonNegativeInteger(value: number | null, name: string): void {

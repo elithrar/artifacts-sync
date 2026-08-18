@@ -1,10 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import { observeArtifactsPush, type ArtifactsPushEvent } from "../src/artifacts.js";
+import {
+  artifactsPushEventSchema,
+  observeArtifactsPush,
+  type ArtifactsPushEvent,
+} from "../src/artifacts.js";
 
 const event: ArtifactsPushEvent = {
   type: "cf.artifacts.repo.pushed",
-  source: "cloudflare.artifacts",
+  source: {
+    type: "artifacts.repo",
+    namespace: "default",
+    repoName: "example",
+  },
   payload: {
     ref: "refs/heads/main",
     before: "a".repeat(40),
@@ -34,11 +42,28 @@ describe("observeArtifactsPush", () => {
   });
 
   it("maps zero OIDs to created and deleted ref state", () => {
-    const observation = observeArtifactsPush({
+    const created = observeArtifactsPush({
       ...event,
-      payload: { ...event.payload, before: "0".repeat(40), after: "0".repeat(40) },
+      payload: { ...event.payload, before: "0".repeat(40) },
     });
-    expect(observation.refs[0]).toMatchObject({ before: null, after: null });
+    const deleted = observeArtifactsPush({
+      ...event,
+      payload: { ...event.payload, after: "0".repeat(40) },
+    });
+    expect(created.refs[0]).toMatchObject({ before: null, after: "b".repeat(40) });
+    expect(deleted.refs[0]).toMatchObject({ before: "a".repeat(40), after: null });
+  });
+
+  it("rejects the old string source and impossible zero-to-zero pushes", () => {
+    expect(
+      artifactsPushEventSchema.safeParse({ ...event, source: "cloudflare.artifacts" }).success,
+    ).toBe(false);
+    expect(() =>
+      observeArtifactsPush({
+        ...event,
+        payload: { ...event.payload, before: "0".repeat(40), after: "0".repeat(40) },
+      }),
+    ).toThrow("cannot have zero before and after OIDs");
   });
 
   it("rejects invalid numeric evidence", () => {

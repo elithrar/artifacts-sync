@@ -3,17 +3,26 @@ import { z } from "zod";
 import { gitOidSchema, gitRefSchema } from "./schemas.js";
 import type { ChangeObservation } from "./types.js";
 
-export const artifactsPushEventSchema = z.object({
-  type: z.literal("cf.artifacts.repo.pushed"),
-  source: z.string().min(1),
-  payload: z.object({
-    ref: gitRefSchema,
-    before: gitOidSchema,
-    after: gitOidSchema,
-    totalCommitsCount: z.number().int().nonnegative(),
-    commitsTruncated: z.boolean(),
-  }),
-});
+export const artifactsPushEventSchema = z
+  .object({
+    type: z.literal("cf.artifacts.repo.pushed"),
+    source: z.object({
+      type: z.literal("artifacts.repo"),
+      namespace: z.string().min(1),
+      repoName: z.string().min(1),
+    }),
+    payload: z.object({
+      ref: gitRefSchema,
+      before: gitOidSchema,
+      after: gitOidSchema,
+      totalCommitsCount: z.number().int().nonnegative(),
+      commitsTruncated: z.boolean(),
+    }),
+  })
+  .refine((event) => !(isZeroOid(event.payload.before) && isZeroOid(event.payload.after)), {
+    error: "An Artifacts push cannot have zero before and after OIDs",
+    path: ["payload"],
+  });
 
 export type ArtifactsPushEvent = z.infer<typeof artifactsPushEventSchema>;
 

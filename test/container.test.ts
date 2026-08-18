@@ -78,4 +78,22 @@ describe("createComputerContainerExecutor", () => {
       "backend must be non-empty",
     );
   });
+
+  it("does not retry ref updates that already match the destination", async () => {
+    const exec = vi.fn<ComputerRuntimeLike["exec"]>(async () => ({
+      result: async () => ({ exitCode: 0, stdout: "", stderr: "" }),
+    }));
+    const executor = createComputerContainerExecutor({ runtime: { exec } });
+    const noOpDeletion = {
+      ...plan.refs[0]!,
+      ref: "refs/heads/obsolete",
+      after: null,
+      destination: { status: "missing" as const },
+    };
+
+    const result = await executor.execute({ ...plan, refs: [...plan.refs, noOpDeletion] }, context);
+
+    expect(result.refs).toEqual(["refs/heads/main"]);
+    expect(exec.mock.calls[0]?.[0]).not.toContain("refs/heads/obsolete");
+  });
 });

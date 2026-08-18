@@ -8,6 +8,8 @@ const payload: GitHubPushPayload = {
   before: "a".repeat(40),
   after: "b".repeat(40),
   forced: false,
+  created: false,
+  deleted: false,
   commits: [{ id: "b".repeat(40) }],
   repository: { full_name: "elithrar/example", size: 12 },
 };
@@ -93,6 +95,15 @@ describe("inspectGitHubPush", () => {
   it("validates its response byte limit", async () => {
     await expect(inspectGitHubPush(payload, { maxResponseBytes: 0 })).rejects.toThrow(
       "maxResponseBytes must be a positive safe integer",
+    );
+  });
+
+  it("rejects push flags that disagree with the before and after OIDs", async () => {
+    await expect(inspectGitHubPush({ ...payload, created: true })).rejects.toThrow(
+      "created must match the before OID",
+    );
+    await expect(inspectGitHubPush({ ...payload, deleted: true })).rejects.toThrow(
+      "deleted must match the after OID",
     );
   });
 });

@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type {
   ArtifactsRepository,
   GitHubRepository,
@@ -53,14 +55,14 @@ export function github(slug: string): GitHubRepository {
     !/^[A-Za-z\d](?:[A-Za-z\d-]{0,37}[A-Za-z\d])?$/.test(owner) ||
     !/^[A-Za-z\d._-]+$/.test(repo)
   ) {
-    throw new Error(`GitHub repository must be "owner/repo"; received ${slug}`);
+    throw new Error('GitHub repository must use the "owner/repo" form');
   }
   return { kind: "github", owner, repo };
 }
 
 export function artifacts(name: string): ArtifactsRepository {
   if (!/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error(`Invalid Artifacts repository name: ${name}`);
+    throw new Error("Invalid Artifacts repository name");
   }
   return { kind: "artifacts", name };
 }
@@ -126,8 +128,8 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
   };
 }
 
-function assertNever(value: never): never {
-  throw new Error(`Unsupported repository: ${JSON.stringify(value)}`);
+function assertNever(_value: never): never {
+  throw new Error("Unsupported repository type");
 }
 
 async function resolveGitHubToken(
@@ -207,6 +209,9 @@ function assertSafeRemoteUrl(url: string): void {
   if (parsed.username !== "" || parsed.password !== "") {
     throw new Error("Pass Git credentials through authorization, not the remote URL");
   }
+  if (parsed.search !== "" || parsed.hash !== "") {
+    throw new Error("Git remote URLs must not contain query parameters or fragments");
+  }
 }
 
 function validateOpaqueValue(value: string, name: string): void {
@@ -214,4 +219,3 @@ function validateOpaqueValue(value: string, name: string): void {
     throw new Error(`${name} must be non-empty and contain no control characters`);
   }
 }
-import { z } from "zod";

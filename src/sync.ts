@@ -52,9 +52,12 @@ export function createSyncClient(options: CreateSyncClientOptions): SyncClient {
     }
     const observed =
       mode === "push" && syncOptions.change !== undefined
-        ? await readDestinationRefs(syncOptions.change, resolvedTo, refReader)
+        ? await readCurrentRefs(syncOptions.change, resolvedFrom, resolvedTo, refReader)
         : syncOptions.change;
-    const cacheWarm = (await options.workspace.hasCache?.(pairKey, observed?.refs ?? [])) ?? false;
+    const cacheWarm =
+      observed === undefined || observed.refs.length === 0
+        ? false
+        : ((await options.workspace.hasCache?.(pairKey, observed.refs)) ?? false);
     const plan = planSync(
       createPlanInput(
         mode,
@@ -93,21 +96,35 @@ export function createSyncClient(options: CreateSyncClientOptions): SyncClient {
   };
 }
 
-async function readDestinationRefs(
+async function readCurrentRefs(
   observation: ChangeObservation,
+  source: ExecutionContext["from"],
   destination: ExecutionContext["to"],
   reader: RefReader,
 ): Promise<ChangeObservation> {
-  const refs = await Promise.all(
-    observation.refs.map(async (change): Promise<RefChange> => {
-      const current = await reader.read(destination, change.ref);
+  const inspected = await Promise.all(
+    observation.refs.map(async (change): Promise<RefChange | null> => {
+      const [currentSource, currentDestination] = await Promise.all([
+        reader.read(source, change.ref),
+        reader.read(destination, change.ref),
+      ]);
+      if (!sameOid(currentSource, change.after)) return null;
       return {
         ...change,
-        destination: current === null ? { status: "missing" } : { status: "present", oid: current },
+        destination:
+          currentDestination === null
+            ? { status: "missing" }
+            : { status: "present", oid: currentDestination },
       };
     }),
   );
+  const refs = inspected.filter((change): change is RefChange => change !== null);
   return { ...observation, refs };
+}
+
+function sameOid(left: string | null, right: string | null): boolean {
+  if (left === null || right === null) return left === right;
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 function createPlanInput(
@@ -117,11 +134,14 @@ function createPlanInput(
   change: ChangeObservation | undefined,
   cacheWarm: boolean,
 ): PlanSyncInput {
+  if (mode === "mirror") {
+    if (limits === undefined) return { mode, strategy, cacheWarm };
+    return { mode, strategy, limits, cacheWarm };
+  }
+  if (change === undefined) throw new Error("Push sync requires a change observation");
   if (limits === undefined) {
-    if (change === undefined) return { mode, strategy, cacheWarm };
     return { mode, strategy, change, cacheWarm };
   }
-  if (change === undefined) return { mode, strategy, limits, cacheWarm };
   return { mode, strategy, limits, change, cacheWarm };
 }
 

@@ -39,7 +39,7 @@ await client.sync(github("elithrar/project"), artifacts("project"), {
 });
 ```
 
-`estimatedPatchBytes` measures complete UTF-8 patches returned by GitHub's Compare API. It is a conservative routing signal, not an estimate of Git pack transfer size. Source and destination ref state remain separate in every plan, and `executed` discriminates `SyncResult` before `result` can be accessed.
+`estimatedPatchBytes` measures complete UTF-8 patches returned by GitHub's Compare API. It is a conservative routing signal, not an estimate of Git pack transfer size. Before planning, the client confirms that each source ref still matches the event and drops stale deliveries so an out-of-order Workflow cannot regress a newer push. Source and destination ref state remain separate in every plan, and `executed` discriminates `SyncResult` before `result` can be accessed.
 
 See [the design plan](./docs/PLAN.md) and [the Cloudflare Worker example](./examples/cloudflare-worker/README.md).
 

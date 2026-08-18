@@ -11,13 +11,23 @@ import type {
 
 const CACHE_ROOT = "/artifacts-sync";
 
-export function createComputerWorkspaceExecutor(workspace: Workspace): SyncExecutor {
+export interface ComputerWorkspaceLike {
+  readonly fs: Pick<Workspace["fs"], "mkdir" | "stat">;
+  readonly git: Pick<
+    Workspace["git"],
+    "catFile" | "fetch" | "init" | "push" | "remoteAdd" | "updateRef"
+  >;
+}
+
+export function createComputerWorkspaceExecutor(workspace: ComputerWorkspaceLike): SyncExecutor {
   return {
     async hasCache(pairKey: string, refs: readonly RefChange[]): Promise<boolean> {
       const dir = `${CACHE_ROOT}/${pairKey}`;
       if (!(await pathExists(workspace, `${dir}/HEAD`))) return false;
-      if (refs.some((change) => change.after !== null && change.before === null)) return false;
-      const baseOids = refs.flatMap((change) => {
+      const pendingRefs = refs.filter((change) => !isSynchronized(change));
+      if (pendingRefs.some((change) => change.after !== null && change.before === null))
+        return false;
+      const baseOids = pendingRefs.flatMap((change) => {
         if (change.after === null || change.before === null) return [];
         return [change.before];
       });
@@ -52,21 +62,26 @@ export function createComputerWorkspaceExecutor(workspace: Workspace): SyncExecu
         force: true,
       });
 
-      for (const change of plan.refs) {
+      const pendingRefs = plan.refs.filter((change) => !isSynchronized(change));
+      for (const change of pendingRefs) {
         // Ref updates are intentionally serialized within the pair coordinator.
         // eslint-disable-next-line no-await-in-loop
         await applyRef(workspace, dir, change, context);
       }
 
       return {
-        refs: plan.refs.map((change) => change.ref),
+        refs: pendingRefs.map((change) => change.ref),
         detail: { cache: warm ? "warm" : "created" },
       };
     },
   };
 }
 
-async function hasObject(workspace: Workspace, dir: string, oid: string): Promise<boolean> {
+async function hasObject(
+  workspace: ComputerWorkspaceLike,
+  dir: string,
+  oid: string,
+): Promise<boolean> {
   try {
     await workspace.git.catFile({ dir, oid });
     return true;
@@ -76,7 +91,7 @@ async function hasObject(workspace: Workspace, dir: string, oid: string): Promis
   }
 }
 
-async function pathExists(workspace: Workspace, path: string): Promise<boolean> {
+async function pathExists(workspace: ComputerWorkspaceLike, path: string): Promise<boolean> {
   try {
     await workspace.fs.stat(path);
     return true;
@@ -87,7 +102,7 @@ async function pathExists(workspace: Workspace, path: string): Promise<boolean> 
 }
 
 async function applyRef(
-  workspace: Workspace,
+  workspace: ComputerWorkspaceLike,
   dir: string,
   change: RefChange,
   context: ExecutionContext,
@@ -105,14 +120,23 @@ async function applyRef(
   }
 
   const localRef = `refs/heads/artifacts-sync-${await shortHash(change.ref)}`;
-  await workspace.git.fetch({
+  const fetched = await workspace.git.fetch({
     dir,
     url: context.from.url,
     ref: localRef,
-    remoteRef: change.ref,
+    remoteRef: change.after,
     singleBranch: true,
     tags: false,
     ...headers(context.from.authorization),
+  });
+  if (fetched.fetchHead?.toLowerCase() !== change.after.toLowerCase()) {
+    throw new Error(`Source did not return the observed object for ${change.ref}`);
+  }
+  await workspace.git.updateRef({
+    dir,
+    ref: localRef,
+    value: change.after,
+    force: true,
   });
   const pushed = await workspace.git.push({
     dir,
@@ -123,6 +147,14 @@ async function applyRef(
     ...headers(context.to.authorization),
   });
   assertPush(pushed.ok, pushed.error, change.ref);
+}
+
+function isSynchronized(change: RefChange): boolean {
+  if (change.after === null) return change.destination.status === "missing";
+  return (
+    change.destination.status === "present" &&
+    change.destination.oid.toLowerCase() === change.after.toLowerCase()
+  );
 }
 
 function headers(authorization: string | undefined): {

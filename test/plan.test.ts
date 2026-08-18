@@ -123,6 +123,21 @@ describe("planSync", () => {
     expect(plan.refs[0]?.before).toBe("a".repeat(40));
   });
 
+  it("treats an empty current observation as a no-op", () => {
+    const plan = planSync({
+      change: { ...smallChange, refs: [] },
+      mode: "push",
+      strategy: "auto",
+      cacheWarm: false,
+    });
+
+    expect(plan).toMatchObject({
+      strategy: "noop",
+      reason: "No current ref changes remain",
+      refs: [],
+    });
+  });
+
   it("rejects invalid limits and duplicate refs", () => {
     expect(() =>
       planSync({
@@ -142,5 +157,45 @@ describe("planSync", () => {
         cacheWarm: true,
       }),
     ).toThrow("Duplicate ref change");
+
+    expect(() =>
+      planSync({
+        change: { ...smallChange, refs: [{ ...smallRef, ref: "refs/heads/.hidden" }] },
+        mode: "push",
+        strategy: "auto",
+        cacheWarm: true,
+      }),
+    ).toThrow("Invalid Git ref");
+
+    expect(() =>
+      planSync({
+        change: { ...smallChange, refs: [{ ...smallRef, after: "0".repeat(40) }] },
+        mode: "push",
+        strategy: "auto",
+        cacheWarm: true,
+      }),
+    ).toThrow("use null");
+  });
+
+  it("routes SHA-256 repositories to native Git", () => {
+    const change: ChangeObservation = {
+      ...smallChange,
+      refs: [
+        {
+          ...smallRef,
+          before: "a".repeat(64),
+          after: "b".repeat(64),
+          destination: { status: "present", oid: "a".repeat(64) },
+        },
+      ],
+    };
+
+    expect(planSync({ change, mode: "push", strategy: "auto", cacheWarm: true })).toMatchObject({
+      strategy: "container",
+      reason: "SHA-256 object IDs require native Git",
+    });
+    expect(() =>
+      planSync({ change, mode: "push", strategy: "workspace", cacheWarm: true }),
+    ).toThrow("supports SHA-1 repositories only");
   });
 });
