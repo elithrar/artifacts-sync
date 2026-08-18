@@ -10,7 +10,10 @@ importers:
     dependencies:
       '@cloudflare/computer':
         specifier: 0.2.1
-        version: 0.2.1(supports-color@10.2.2)
+        version: 0.2.1(@platformatic/vfs@0.4.0)(supports-color@10.2.2)(zod@4.4.3)
+      '@platformatic/vfs':
+        specifier: ^0.4.0
+        version: 0.4.0
       isomorphic-git:
         specifier: 1.34.1
         version: 1.34.1
@@ -747,6 +750,11 @@ packages:
 
   '@oxlint/plugins@1.78.0':
     resolution: {integrity: sha512-Ypt8KeRYw+4jUtlPirfcHWMrn5ms12VrrFPD+Mds477/7tJxG1Kcz2Yrg2nVcTQEUx/GdlhS+BUg1kmxNm04Ug==}
+    engines: {node: ^12.22.0 || ^14.17.0 || >=16.0.0}
+
+  '@platformatic/vfs@0.4.0':
+    resolution: {integrity: sha512-JwRxSIG63e/VaDSkYXkSBajySt5MJzxYIKuknYda28fhhmJMqyUGf5rbKrGW+vO9L83nIjQH3+YI12fp7EKICQ==}
+    engines: {node: '>= 22'}
 
   '@poppinss/colors@4.1.6':
     resolution: {integrity: sha512-H9xkIdFswbS8n1d6vmRd8+c10t2Qe+rZITbbDHHkQixH5+2x1FDGmi/0K+WgWiqQFKPSlIYB7jlH6Kpfn6Fleg==}
@@ -1817,11 +1825,14 @@ snapshots:
 
   '@borewit/text-codec@0.2.2': {}
 
-  '@cloudflare/computer@0.2.1(supports-color@10.2.2)':
+  '@cloudflare/computer@0.2.1(@platformatic/vfs@0.4.0)(supports-color@10.2.2)(zod@4.4.3)':
     dependencies:
       acorn: 8.18.0
       capnweb: 0.8.0
       just-bash: 3.3.0(supports-color@10.2.2)
+    optionalDependencies:
+      '@platformatic/vfs': 0.4.0
+      zod: 4.4.3
     transitivePeerDependencies:
       - supports-color
 
@@ -2215,6 +2226,8 @@ snapshots:
     optional: true
 
   '@oxlint/plugins@1.78.0': {}
+
+  '@platformatic/vfs@0.4.0': {}
 
   '@poppinss/colors@4.1.6':
     dependencies:

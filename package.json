@@ -36,6 +36,7 @@
   },
   "dependencies": {
     "@cloudflare/computer": "0.2.1",
+    "@platformatic/vfs": "^0.4.0",
     "isomorphic-git": "1.34.1",
     "zod": "4.4.3"
   },
