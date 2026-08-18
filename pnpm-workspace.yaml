@@ -1,0 +1,9 @@
+packages: []
+allowBuilds:
+  "@mongodb-js/zstd": false
+  esbuild: true
+  node-liblzma: false
+  workerd: true
+minimumReleaseAgeExclude:
+  - "@cloudflare/computer@0.2.1"
+  - "@cloudflare/workers-types@5.20260818.1"

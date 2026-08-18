@@ -1,0 +1,71 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "artifacts-sync-example",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "GITHUB_REPOSITORY": "elithrar/example",
+    "ARTIFACTS_REPOSITORY": "example",
+  },
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "default",
+    },
+  ],
+  "containers": [
+    {
+      "class_name": "SyncCoordinator",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 10,
+    },
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SYNC_COORDINATOR",
+        "class_name": "SyncCoordinator",
+      },
+    ],
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SyncCoordinator"],
+    },
+  ],
+  "workflows": [
+    {
+      "name": "artifacts-sync-example",
+      "binding": "SYNC_WORKFLOW",
+      "class_name": "SyncWorkflow",
+    },
+  ],
+  "triggers": {
+    "events": [
+      {
+        "type": "cf.artifacts.repo.pushed",
+        "filter": {
+          "namespace": "default",
+          "repoName": "example",
+        },
+        "target": {
+          "scriptName": "artifacts-sync-example",
+          "workflowName": "artifacts-sync-example",
+        },
+      },
+    ],
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "logs": {
+      "enabled": true,
+    },
+    "traces": {
+      "enabled": true,
+    },
+  },
+}

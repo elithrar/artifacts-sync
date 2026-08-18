@@ -1,0 +1,11 @@
+{
+  "categories": {
+    "correctness": "error",
+    "perf": "warn",
+    "suspicious": "error"
+  },
+  "rules": {
+    "no-console": "warn",
+    "typescript/no-floating-promises": "error"
+  }
+}
