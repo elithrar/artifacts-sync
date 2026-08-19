@@ -7,15 +7,15 @@ The library validates GitHub webhooks and Artifacts events, starts durable Workf
 ## Installation
 
 ```sh
-pnpm add @elithrar/artifacts-sync
+pnpm add artifacts-sync
 ```
 
 ## Quick start
 
 ```ts
-import { syncRepos } from "@elithrar/artifacts-sync";
+import { syncRepos } from "artifacts-sync";
 
-export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
+export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "artifacts-sync";
 
 export default syncRepos({
   github: "elithrar/project",

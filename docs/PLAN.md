@@ -59,9 +59,9 @@ One Durable Object per pair prevents opposite directions from running concurrent
 ## Public API
 
 ```ts
-import { syncRepos } from "@elithrar/artifacts-sync";
+import { syncRepos } from "artifacts-sync";
 
-export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
+export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "artifacts-sync";
 
 export default syncRepos([
   {

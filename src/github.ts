@@ -8,7 +8,7 @@ const MAX_COMPARE_FILES = 300;
 const MAX_WEBHOOK_BYTES = 10 * 1024 * 1024;
 const GITHUB_WEBHOOK_PATH = "/webhooks/github";
 const GITHUB_API_VERSION = "2026-03-10";
-const GITHUB_USER_AGENT = "@elithrar/artifacts-sync";
+const GITHUB_USER_AGENT = "artifacts-sync";
 
 const compareFileSchema = z.object({
   status: z.string().optional(),

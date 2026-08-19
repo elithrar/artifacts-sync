@@ -11,9 +11,9 @@ GitHub and Artifacts pushes use the same Workflow to keep the repositories synch
 Edit `src/index.ts`:
 
 ```ts
-import { syncRepos } from "@elithrar/artifacts-sync";
+import { syncRepos } from "artifacts-sync";
 
-export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "@elithrar/artifacts-sync";
+export { SyncCoordinator, SyncWorkflow, WorkspaceProxy } from "artifacts-sync";
 
 export default syncRepos({
   github: "elithrar/artifacts-sync",

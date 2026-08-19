@@ -1,5 +1,5 @@
 {
-  "name": "@elithrar/artifacts-sync",
+  "name": "artifacts-sync",
   "version": "0.0.1",
   "description": "Size-aware Git synchronization between GitHub and Cloudflare Artifacts",
   "license": "Apache-2.0",
