@@ -1,6 +1,6 @@
 {
   "name": "artifacts-sync",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Size-aware Git synchronization between GitHub and Cloudflare Artifacts",
   "license": "Apache-2.0",
   "repository": {
