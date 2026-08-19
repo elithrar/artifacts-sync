@@ -87,6 +87,31 @@ describe("inspectGitHubPush", () => {
     });
   });
 
+  it("routes tag updates to native Git without comparing tag object IDs", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const observation = await inspectGitHubPush(
+      { ...payload, ref: "refs/tags/v0.0.1" },
+      { fetch: fetcher },
+    );
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(observation).toMatchObject({
+      complete: false,
+      refs: [{ ref: "refs/tags/v0.0.1", estimatedPatchBytes: null }],
+    });
+  });
+
+  it("routes forced branch updates to native Git without comparing commits", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    const observation = await inspectGitHubPush({ ...payload, forced: true }, { fetch: fetcher });
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(observation).toMatchObject({
+      complete: false,
+      refs: [{ forced: true, estimatedPatchBytes: null }],
+    });
+  });
+
   it("rejects malformed compare responses", async () => {
     const fetcher = vi
       .fn<typeof fetch>()

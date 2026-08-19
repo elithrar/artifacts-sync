@@ -116,6 +116,10 @@ export async function inspectGitHubPush(
     );
   }
 
+  if (!payload.ref.startsWith("refs/heads/") || payload.forced) {
+    return incompleteObservation(payload, sourceSizeBytes);
+  }
+
   const fetcher = options.fetch ?? globalThis.fetch;
   const base = options.apiUrl ?? "https://api.github.com";
   const headers = new Headers({
