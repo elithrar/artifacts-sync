@@ -5,6 +5,7 @@ import {
   git,
   parseArtifactsRepository,
   parseGitHubRepository,
+  parseOriginRepository,
   type ArtifactsBindingLike,
 } from "../src/repositories.js";
 
@@ -43,6 +44,26 @@ describe("repository helpers", () => {
       identity: "artifacts:staging/example",
       authorization: `Basic ${btoa("x:artifact-token")}`,
     });
+  });
+
+  it("delegates Origin resolution without exposing a public constructor", async () => {
+    const origin = {
+      resolve: vi.fn(async () => ({
+        identity: "origin:repo-1",
+        url: "https://origin.cursor.com/elithrar/example.git",
+        authorization: "Basic origin-token",
+      })),
+    };
+    const resolver = createCloudflareResolver({
+      artifacts: bindingWithToken("artifact-token"),
+      origin,
+    });
+    const repository = parseOriginRepository("elithrar/example", "installation-1");
+
+    await expect(resolver.resolve(repository, "write")).resolves.toMatchObject({
+      identity: "origin:repo-1",
+    });
+    expect(origin.resolve).toHaveBeenCalledWith(repository, "write");
   });
 
   it("prefers an explicit Artifacts remote over repo handle metadata", async () => {
@@ -102,6 +123,12 @@ describe("repository helpers", () => {
   it("rejects unsafe remote URLs and invalid token configuration", () => {
     expect(() => parseGitHubRepository("owner/repo?token=secret")).toThrow(
       'must use the "owner/repo" form',
+    );
+    expect(() => parseOriginRepository("owner", "installation-1")).toThrow(
+      'must use the "owner/repo" form',
+    );
+    expect(() => parseOriginRepository("owner/repo", "bad\ninstallation")).toThrow(
+      "Origin installation ID",
     );
     expect(() => git("http://example.com/repo.git")).toThrow("must use HTTPS");
     expect(() => git("https://token@example.com/repo.git")).toThrow(

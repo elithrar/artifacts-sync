@@ -4,6 +4,7 @@ import type {
   ArtifactsRepository,
   GitHubRepository,
   GitRepository,
+  OriginRepository,
   Repository,
   RepositoryAccess,
   RepositoryResolver,
@@ -44,6 +45,7 @@ export interface CloudflareResolverOptions {
   readonly artifacts: ArtifactsBindingLike;
   readonly githubToken?: string;
   readonly githubTokenFor?: (repository: GitHubRepository) => Promise<string>;
+  readonly origin?: RepositoryResolver;
   readonly artifactsRemoteFor?: (repository: ArtifactsRepository) => string | undefined;
   readonly artifactTokenTtlSeconds?: number;
   readonly createMissingArtifactsRepositories?: boolean;
@@ -63,6 +65,12 @@ const githubRepositorySchema = z
       repo: slug.slice(separator + 1),
     };
   });
+const originRepositorySchema = z
+  .string()
+  .regex(
+    /^[A-Za-z\d][A-Za-z\d._-]*\/[A-Za-z\d][A-Za-z\d._-]*$/,
+    'Origin repository must use the "owner/repo" form',
+  );
 const artifactsRepositorySchema = z
   .string()
   .regex(
@@ -100,6 +108,23 @@ export function parseArtifactsRepository(value: string): ArtifactsRepository {
   return result.data;
 }
 
+export function parseOriginRepository(slug: string, installationId: string): OriginRepository {
+  const result = originRepositorySchema.safeParse(slug);
+  if (!result.success) {
+    throw new Error(
+      result.error.issues[0]?.message ?? 'Origin repository must use the "owner/repo" form',
+    );
+  }
+  validateOpaqueValue(installationId, "Origin installation ID");
+  const separator = result.data.indexOf("/");
+  return {
+    kind: "origin",
+    owner: result.data.slice(0, separator),
+    repo: result.data.slice(separator + 1),
+    installationId,
+  };
+}
+
 export function git(
   url: string,
   options: { identity?: string; authorization?: string } = {},
@@ -131,6 +156,12 @@ export function createCloudflareResolver(options: CloudflareResolverOptions): Re
             `https://github.com/${repository.owner}/${repository.repo}.git`,
             token === undefined ? undefined : basicAuthorization("x-access-token", token),
           );
+        }
+        case "origin": {
+          if (options.origin === undefined) {
+            throw new Error("Origin repository resolver is not configured");
+          }
+          return options.origin.resolve(repository, access);
         }
         case "artifacts": {
           const resolved = await resolveArtifactsRepo(options, repository.name, access);

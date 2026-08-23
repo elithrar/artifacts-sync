@@ -1,7 +1,7 @@
 {
   "name": "artifacts-sync",
   "version": "0.0.2",
-  "description": "Size-aware Git synchronization between GitHub and Cloudflare Artifacts",
+  "description": "Event-driven Git synchronization between GitHub or Cursor Origin and Cloudflare Artifacts",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -39,6 +39,7 @@
   "dependencies": {
     "@cloudflare/computer": "0.2.1",
     "@platformatic/vfs": "^0.4.0",
+    "cursor-origin-webhooks": "0.0.1",
     "isomorphic-git": "1.34.1",
     "zod": "4.4.3"
   },

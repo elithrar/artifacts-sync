@@ -26,6 +26,19 @@ export default syncRepos({
 
 A repository without a namespace uses `default` and the `ARTIFACTS` binding. A `namespace/repo` value requires `artifactsBinding`. `artifactsRemote` supplies the Git URL explicitly while the binding mints short-lived repo tokens.
 
+To use a native Cursor Origin repository instead, keep the Artifacts settings and replace the peer configuration:
+
+```ts
+export default syncRepos({
+  origin: "elithrar/artifacts-sync",
+  originInstallationId: "i_01...",
+  artifacts: "artifacts-sync",
+  artifactsRemote:
+    "https://d458dbe698b8eef41837f941d73bc5b3.artifacts.cloudflare.net/git/default/artifacts-sync.git",
+  direction: "bidirectional",
+});
+```
+
 ## Configure Cloudflare
 
 Keep each Artifacts binding aligned with the namespace in `src/index.ts`:
@@ -46,7 +59,8 @@ The checked-in `wrangler.jsonc` also declares:
 - A filtered `cf.artifacts.repo.pushed` trigger for the Artifacts repository.
 - Worker logs and traces.
 
-Remove a repository's Artifacts event trigger when its direction is `github-to-artifacts`.
+Remove a repository's Artifacts event trigger when its direction only accepts pushes from its
+GitHub or Origin peer.
 
 Generate binding types after editing `wrangler.jsonc`:
 
@@ -80,3 +94,9 @@ pnpm deploy:example
 An accepted GitHub delivery returns HTTP `202` with the pair-specific Workflow ID. The Workflow output reports the repository pair, whether work ran, the selected strategy, affected refs, and the planning reason.
 
 Duplicate GitHub deliveries reuse the same pair-specific ID and do not create another Workflow instance.
+
+For Origin, store `ORIGIN_APP_ID` and the app's PKCS#8 `ORIGIN_APP_PRIVATE_KEY` as Worker secrets.
+Grant the installation the scopes required by its configured direction. Subscribe the Origin App to
+`repository.pushed` and send deliveries to `https://<worker>/webhooks/origin` only for
+`origin-to-artifacts` or `bidirectional` pairs. Origin delivery IDs use the same pair-specific
+Workflow deduplication.
