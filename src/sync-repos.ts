@@ -20,6 +20,9 @@ import {
   findConfigurationById,
   findConfigurationForArtifacts,
   findConfigurationForGitHub,
+  findConfigurationForOrigin,
+  type GitHubSyncConfiguration,
+  type OriginSyncConfiguration,
   type SyncConfiguration,
   type SyncConfigurationRegistry,
   type SyncReposOptions,
@@ -27,13 +30,20 @@ import {
 import { createComputerContainerExecutor } from "./executors/computer-container.js";
 import { createComputerWorkspaceExecutor } from "./executors/computer-workspace.js";
 import { handleGitHubWebhook, inspectGitHubPush } from "./github.js";
+import { createOriginResolver } from "./origin-auth.js";
+import {
+  handleOriginWebhook,
+  observeOriginPush,
+  originPushEventSchema,
+  type OriginPushEvent,
+} from "./origin.js";
 import { createCloudflareResolver } from "./repositories.js";
 import { githubPushPayloadSchema } from "./schemas.js";
 import { createSyncClient } from "./sync.js";
 import type { ArtifactsBindingLike } from "./repositories.js";
 import type { ArtifactsPushEvent } from "./artifacts.js";
 import type { GitHubPushPayload } from "./schemas.js";
-import type { PlannedStrategy, SyncClient, SyncResult } from "./types.js";
+import type { PlannedStrategy, RepositoryResolver, SyncClient, SyncResult } from "./types.js";
 
 export interface SyncResultSummary {
   readonly pair: string | null;
@@ -53,14 +63,20 @@ interface GitHubSyncJob {
   readonly event: GitHubPushPayload;
 }
 
+interface OriginSyncJob {
+  readonly kind: "origin";
+  readonly configurationId: string;
+  readonly event: OriginPushEvent;
+}
+
 interface RoutedArtifactsSyncJob {
   readonly kind: "artifacts";
   readonly configurationId: string;
   readonly event: ArtifactsPushEvent;
 }
 
-type SyncJob = GitHubSyncJob | ArtifactsPushEvent;
-type RoutedSyncJob = GitHubSyncJob | RoutedArtifactsSyncJob;
+type SyncJob = GitHubSyncJob | OriginSyncJob | ArtifactsPushEvent;
+type RoutedSyncJob = GitHubSyncJob | OriginSyncJob | RoutedArtifactsSyncJob;
 type RuntimeBinding =
   | string
   | ArtifactsBindingLike
@@ -71,6 +87,8 @@ interface SyncRuntimeEnv {
   readonly [binding: string]: RuntimeBinding;
   readonly GITHUB_TOKEN: string;
   readonly GITHUB_WEBHOOK_SECRET: string;
+  readonly ORIGIN_APP_ID: string;
+  readonly ORIGIN_APP_PRIVATE_KEY: string;
   readonly SYNC_COORDINATOR: DurableObjectNamespace<SyncCoordinator>;
   readonly SYNC_WORKFLOW: Workflow<SyncJob>;
 }
@@ -79,6 +97,11 @@ const githubSyncJobSchema = z.object({
   kind: z.literal("github"),
   configurationId: z.string().min(1),
   event: githubPushPayloadSchema,
+});
+const originSyncJobSchema = z.object({
+  kind: z.literal("origin"),
+  configurationId: z.string().min(1),
+  event: originPushEventSchema,
 });
 const artifactsBindingSchema = z.object({
   get: z.function(),
@@ -100,6 +123,7 @@ export class SyncCoordinator extends ContainerBase {
   readonly #backend: CloudflareContainerBackend;
   readonly #workspace: Workspace;
   #tail: Promise<void> = Promise.resolve();
+  #originResolver: RepositoryResolver | undefined;
 
   constructor(ctx: DurableObjectState, env: SyncRuntimeEnv) {
     super(ctx, env);
@@ -151,31 +175,52 @@ export class SyncCoordinator extends ContainerBase {
     const configured = requireConfiguration(job.configurationId);
     const client = this.#createClient(configured);
     if (job.kind === "github") {
-      requireDirection(configured, "github-to-artifacts");
-      assertGitHubRepository(job.event, configured);
+      const github = requireGitHubConfiguration(configured);
+      requireDirection(github, "peer-to-artifacts");
+      assertGitHubRepository(job.event, github);
       const change = await inspectGitHubPush(job.event, {
         token: requiredSecret(this.env.GITHUB_TOKEN, "GITHUB_TOKEN"),
       });
-      return client.sync(configured.github, configured.artifacts, { change });
+      return client.sync(github.peer, configured.artifacts, { change });
     }
 
-    requireDirection(configured, "artifacts-to-github");
+    if (job.kind === "origin") {
+      const origin = requireOriginConfiguration(configured);
+      requireDirection(origin, "peer-to-artifacts");
+      assertOriginRepository(job.event, origin);
+      const source = { ...origin.peer, repositoryId: job.event.repository.id };
+      return client.sync(source, origin.artifacts, { change: observeOriginPush(job.event) });
+    }
+
+    requireDirection(configured, "artifacts-to-peer");
     assertArtifactsRepository(job.event, configured);
-    return client.sync(configured.artifacts, configured.github, {
+    return client.sync(configured.artifacts, configured.peer, {
       change: observeArtifactsPush(job.event),
     });
   }
 
   #createClient(configured: SyncConfiguration): SyncClient {
+    const peerCredentials =
+      configured.provider === "github"
+        ? { githubToken: requiredSecret(this.env.GITHUB_TOKEN, "GITHUB_TOKEN") }
+        : { origin: this.#getOriginResolver() };
     return createSyncClient({
       resolver: createCloudflareResolver({
         artifacts: requiredArtifactsBinding(this.env, configured.artifactsBinding),
         artifactsRemoteFor: () => configured.artifactsRemote,
-        githubToken: requiredSecret(this.env.GITHUB_TOKEN, "GITHUB_TOKEN"),
+        ...peerCredentials,
       }),
       workspace: createComputerWorkspaceExecutor(this.#workspace),
       container: createComputerContainerExecutor(this.#workspace),
     });
+  }
+
+  #getOriginResolver(): RepositoryResolver {
+    this.#originResolver ??= createOriginResolver({
+      appId: requiredSecret(this.env.ORIGIN_APP_ID, "ORIGIN_APP_ID"),
+      privateKey: requiredSecret(this.env.ORIGIN_APP_PRIVATE_KEY, "ORIGIN_APP_PRIVATE_KEY"),
+    });
+    return this.#originResolver;
   }
 }
 
@@ -212,7 +257,10 @@ export function syncRepos(
 
   return Object.freeze({
     async fetch(request: Request, env: SyncRuntimeEnv): Promise<Response> {
-      return receiveGitHubWebhook(request, env, registry);
+      const pathname = new URL(request.url).pathname;
+      if (pathname === "/webhooks/github") return receiveGitHubWebhook(request, env, registry);
+      if (pathname === "/webhooks/origin") return receiveOriginWebhook(request, env, registry);
+      return new Response("Not found", { status: 404 });
     },
   });
 }
@@ -237,8 +285,10 @@ async function receiveGitHubWebhook(
   env: SyncRuntimeEnv,
   registry: SyncConfigurationRegistry,
 ): Promise<Response> {
-  const hasGitHubSource = registry.configurations.some((configuration) =>
-    allowsDirection(configuration.direction, "github-to-artifacts"),
+  const hasGitHubSource = registry.configurations.some(
+    (configuration) =>
+      configuration.provider === "github" &&
+      allowsDirection(configuration.direction, "peer-to-artifacts"),
   );
   if (!hasGitHubSource) return new Response("Not found", { status: 404 });
 
@@ -260,11 +310,46 @@ async function receiveGitHubWebhook(
   });
 }
 
+async function receiveOriginWebhook(
+  request: Request,
+  env: SyncRuntimeEnv,
+  registry: SyncConfigurationRegistry,
+): Promise<Response> {
+  const hasOriginSource = registry.configurations.some(
+    (configuration) =>
+      configuration.provider === "origin" &&
+      allowsDirection(configuration.direction, "peer-to-artifacts"),
+  );
+  if (!hasOriginSource) return new Response("Not found", { status: 404 });
+
+  return handleOriginWebhook(request, {
+    appId: requiredSecret(env.ORIGIN_APP_ID, "ORIGIN_APP_ID"),
+    route(event): string | undefined {
+      return findConfigurationForOrigin(
+        registry,
+        event.installationId,
+        event.repository.owner.slug,
+        event.repository.name,
+      )?.id;
+    },
+    async enqueue(delivery, configurationId, event): Promise<string> {
+      const id = await workflowInstanceId(delivery, configurationId);
+      await env.SYNC_WORKFLOW.createBatch([
+        { id, params: { kind: "origin", configurationId, event } },
+      ]);
+      return id;
+    },
+  });
+}
+
 function parseSyncJob(job: SyncJob): SyncJob {
-  const githubDiscriminator = z.object({ kind: z.literal("github") }).safeParse(job);
-  const result = githubDiscriminator.success
-    ? githubSyncJobSchema.safeParse(job)
-    : artifactsPushEventSchema.safeParse(job);
+  const discriminator = z.object({ kind: z.enum(["github", "origin"]) }).safeParse(job);
+  const result =
+    discriminator.success && discriminator.data.kind === "github"
+      ? githubSyncJobSchema.safeParse(job)
+      : discriminator.success
+        ? originSyncJobSchema.safeParse(job)
+        : artifactsPushEventSchema.safeParse(job);
   if (!result.success) {
     const issues = result.error.issues
       .slice(0, 5)
@@ -280,10 +365,18 @@ function parseSyncJob(job: SyncJob): SyncJob {
 }
 
 function routeSyncJob(job: SyncJob): RoutedSyncJob | undefined {
-  if ("kind" in job) {
+  if ("kind" in job && job.kind === "github") {
     const configured = requireConfiguration(job.configurationId);
-    requireDirection(configured, "github-to-artifacts");
-    assertGitHubRepository(job.event, configured);
+    const github = requireGitHubConfiguration(configured);
+    requireDirection(github, "peer-to-artifacts");
+    assertGitHubRepository(job.event, github);
+    return job;
+  }
+  if ("kind" in job && job.kind === "origin") {
+    const configured = requireConfiguration(job.configurationId);
+    const origin = requireOriginConfiguration(configured);
+    requireDirection(origin, "peer-to-artifacts");
+    assertOriginRepository(job.event, origin);
     return job;
   }
 
@@ -318,7 +411,7 @@ function copySummary(result: SyncResultSummary): SyncResultSummary {
 
 function ignoredArtifactsEvent(job: SyncJob): SyncResultSummary {
   if ("kind" in job) {
-    throw new NonRetryableError("GitHub sync job could not be routed");
+    throw new NonRetryableError(`${job.kind} sync job could not be routed`);
   }
   return {
     pair: null,
@@ -331,18 +424,46 @@ function ignoredArtifactsEvent(job: SyncJob): SyncResultSummary {
 
 function requireDirection(
   configured: SyncConfiguration,
-  required: Exclude<SyncConfiguration["direction"], "bidirectional">,
+  required: "peer-to-artifacts" | "artifacts-to-peer",
 ): void {
   if (!allowsDirection(configured.direction, required)) {
     throw new NonRetryableError(`Sync direction does not allow ${required}`);
   }
 }
 
-function assertGitHubRepository(event: GitHubPushPayload, configured: SyncConfiguration): void {
-  const expected = `${configured.github.owner}/${configured.github.repo}`;
+function assertGitHubRepository(
+  event: GitHubPushPayload,
+  configured: GitHubSyncConfiguration,
+): void {
+  const expected = `${configured.peer.owner}/${configured.peer.repo}`;
   if (event.repository.full_name.toLowerCase() !== expected.toLowerCase()) {
     throw new NonRetryableError("GitHub repository does not match sync configuration");
   }
+}
+
+function assertOriginRepository(event: OriginPushEvent, configured: OriginSyncConfiguration): void {
+  const expected = `${configured.peer.owner}/${configured.peer.repo}`;
+  const actual = `${event.repository.owner.slug}/${event.repository.name}`;
+  if (
+    event.installationId !== configured.peer.installationId ||
+    actual.toLowerCase() !== expected.toLowerCase()
+  ) {
+    throw new NonRetryableError("Origin repository does not match sync configuration");
+  }
+}
+
+function requireGitHubConfiguration(configured: SyncConfiguration): GitHubSyncConfiguration {
+  if (configured.provider !== "github") {
+    throw new NonRetryableError("Sync job requires a GitHub repository pair");
+  }
+  return configured;
+}
+
+function requireOriginConfiguration(configured: SyncConfiguration): OriginSyncConfiguration {
+  if (configured.provider !== "origin") {
+    throw new NonRetryableError("Sync job requires an Origin repository pair");
+  }
+  return configured;
 }
 
 function assertArtifactsRepository(event: ArtifactsPushEvent, configured: SyncConfiguration): void {

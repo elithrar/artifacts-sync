@@ -1,38 +1,79 @@
-import { git, parseArtifactsRepository, parseGitHubRepository } from "./repositories.js";
+import {
+  git,
+  parseArtifactsRepository,
+  parseGitHubRepository,
+  parseOriginRepository,
+} from "./repositories.js";
 import { z } from "zod";
-import type { ArtifactsRepository, GitHubRepository } from "./types.js";
+import type { ArtifactsRepository, GitHubRepository, OriginRepository } from "./types.js";
 
-export type SyncDirection = "github-to-artifacts" | "artifacts-to-github" | "bidirectional";
+export type GitHubSyncDirection = "github-to-artifacts" | "artifacts-to-github" | "bidirectional";
+export type OriginSyncDirection = "origin-to-artifacts" | "artifacts-to-origin" | "bidirectional";
+export type SyncDirection = "peer-to-artifacts" | "artifacts-to-peer" | "bidirectional";
 
-type GitHubRepositoryInput = `${string}/${string}`;
+type RepositoryInput = `${string}/${string}`;
 
-export interface SyncReposOptions {
-  readonly github: GitHubRepositoryInput;
+interface ArtifactsOptions {
   readonly artifacts: string;
   readonly artifactsBinding?: string;
   readonly artifactsRemote?: string;
-  readonly direction: SyncDirection;
 }
 
-export interface SyncConfiguration {
+export interface GitHubSyncReposOptions extends ArtifactsOptions {
+  readonly github: RepositoryInput;
+  readonly origin?: never;
+  readonly originInstallationId?: never;
+  readonly direction: GitHubSyncDirection;
+}
+
+export interface OriginSyncReposOptions extends ArtifactsOptions {
+  readonly github?: never;
+  readonly origin: RepositoryInput;
+  readonly originInstallationId: string;
+  readonly direction: OriginSyncDirection;
+}
+
+export type SyncReposOptions = GitHubSyncReposOptions | OriginSyncReposOptions;
+
+interface BaseSyncConfiguration {
   readonly id: string;
-  readonly github: GitHubRepository;
   readonly artifacts: ArtifactsRepository;
   readonly artifactsBinding: string;
   readonly artifactsRemote?: string;
   readonly direction: SyncDirection;
 }
 
+export interface GitHubSyncConfiguration extends BaseSyncConfiguration {
+  readonly provider: "github";
+  readonly peer: GitHubRepository;
+}
+
+export interface OriginSyncConfiguration extends BaseSyncConfiguration {
+  readonly provider: "origin";
+  readonly peer: OriginRepository;
+}
+
+export type SyncConfiguration = GitHubSyncConfiguration | OriginSyncConfiguration;
+
 export interface SyncConfigurationRegistry {
   readonly configurations: readonly SyncConfiguration[];
 }
 
-const syncReposOptionsSchema = z.strictObject({
-  github: z.string(),
+const artifactsOptionFields = {
   artifacts: z.string(),
   artifactsBinding: z.string().optional(),
   artifactsRemote: z.string().optional(),
+};
+const githubOptionsSchema = z.strictObject({
+  ...artifactsOptionFields,
+  github: z.string(),
   direction: z.enum(["github-to-artifacts", "artifacts-to-github", "bidirectional"]),
+});
+const originOptionsSchema = z.strictObject({
+  ...artifactsOptionFields,
+  origin: z.string(),
+  originInstallationId: z.string().min(1),
+  direction: z.enum(["origin-to-artifacts", "artifacts-to-origin", "bidirectional"]),
 });
 
 export function createConfigurationRegistry(
@@ -56,12 +97,29 @@ export function findConfigurationById(
 export function findConfigurationForGitHub(
   registry: SyncConfigurationRegistry,
   slug: string,
-): SyncConfiguration | undefined {
+): GitHubSyncConfiguration | undefined {
   const key = slug.toLowerCase();
   return registry.configurations.find(
-    (configuration) =>
-      allowsDirection(configuration.direction, "github-to-artifacts") &&
-      githubKey(configuration.github) === key,
+    (configuration): configuration is GitHubSyncConfiguration =>
+      configuration.provider === "github" &&
+      allowsDirection(configuration.direction, "peer-to-artifacts") &&
+      peerKey(configuration) === key,
+  );
+}
+
+export function findConfigurationForOrigin(
+  registry: SyncConfigurationRegistry,
+  installationId: string,
+  owner: string,
+  name: string,
+): OriginSyncConfiguration | undefined {
+  const key = `${owner}/${name}`.toLowerCase();
+  return registry.configurations.find(
+    (configuration): configuration is OriginSyncConfiguration =>
+      configuration.provider === "origin" &&
+      allowsDirection(configuration.direction, "peer-to-artifacts") &&
+      configuration.peer.installationId === installationId &&
+      peerKey(configuration) === key,
   );
 }
 
@@ -72,7 +130,7 @@ export function findConfigurationForArtifacts(
 ): SyncConfiguration | undefined {
   return registry.configurations.find(
     (configuration) =>
-      allowsDirection(configuration.direction, "artifacts-to-github") &&
+      allowsDirection(configuration.direction, "artifacts-to-peer") &&
       configuration.artifacts.namespace === namespace &&
       configuration.artifacts.name === name,
   );
@@ -86,32 +144,72 @@ export function allowsDirection(
 }
 
 function validateConfiguration(options: SyncReposOptions): SyncConfiguration {
-  const result = syncReposOptionsSchema.safeParse(options);
-  if (!result.success) {
-    const issue = result.error.issues[0];
-    const field = issue?.path[0];
-    const location = field === undefined ? "configuration" : String(field);
-    throw new Error(`Invalid syncRepos ${location}: ${issue?.message ?? "validation failed"}`, {
-      cause: result.error,
-    });
-  }
+  const isOrigin = "origin" in options;
+  const result = isOrigin
+    ? originOptionsSchema.safeParse(options)
+    : githubOptionsSchema.safeParse(options);
+  if (!result.success) throwConfigurationError(result.error);
   const parsed = result.data;
-
-  const github = Object.freeze(parseGitHubRepository(parsed.github));
   const artifacts = Object.freeze(parseArtifactsRepository(parsed.artifacts));
   const artifactsBinding = resolveArtifactsBinding(artifacts, parsed.artifactsBinding);
   const artifactsRemote =
     parsed.artifactsRemote === undefined ? undefined : git(parsed.artifactsRemote).url;
-  const configuration = {
-    id: configurationId(github, artifacts),
-    github,
+  const remoteConfiguration = artifactsRemote === undefined ? {} : { artifactsRemote };
+
+  if (isOrigin) {
+    const originParsed = originOptionsSchema.parse(parsed);
+    const peer = Object.freeze(
+      parseOriginRepository(originParsed.origin, originParsed.originInstallationId),
+    );
+    return freezeConfiguration({
+      id: configurationId("origin", originKey(peer), artifacts),
+      provider: "origin",
+      peer,
+      artifacts,
+      artifactsBinding,
+      ...remoteConfiguration,
+      direction: normalizeOriginDirection(originParsed.direction),
+    });
+  }
+
+  const githubParsed = githubOptionsSchema.parse(parsed);
+  const peer = Object.freeze(parseGitHubRepository(githubParsed.github));
+  return freezeConfiguration({
+    id: configurationId("github", githubKey(peer), artifacts),
+    provider: "github",
+    peer,
     artifacts,
     artifactsBinding,
-    direction: parsed.direction,
-  };
-  return Object.freeze(
-    artifactsRemote === undefined ? configuration : { ...configuration, artifactsRemote },
-  );
+    ...remoteConfiguration,
+    direction: normalizeGitHubDirection(githubParsed.direction),
+  });
+}
+
+function throwConfigurationError(error: z.ZodError): never {
+  const issue = error.issues[0];
+  const field = issue?.path[0];
+  const location = field === undefined ? "configuration" : String(field);
+  throw new Error(`Invalid syncRepos ${location}: ${issue?.message ?? "validation failed"}`, {
+    cause: error,
+  });
+}
+
+function freezeConfiguration<Configuration extends SyncConfiguration>(
+  configuration: Configuration,
+): Configuration {
+  return Object.freeze(configuration);
+}
+
+function normalizeGitHubDirection(direction: GitHubSyncDirection): SyncDirection {
+  if (direction === "github-to-artifacts") return "peer-to-artifacts";
+  if (direction === "artifacts-to-github") return "artifacts-to-peer";
+  return direction;
+}
+
+function normalizeOriginDirection(direction: OriginSyncDirection): SyncDirection {
+  if (direction === "origin-to-artifacts") return "peer-to-artifacts";
+  if (direction === "artifacts-to-origin") return "artifacts-to-peer";
+  return direction;
 }
 
 function resolveArtifactsBinding(
@@ -143,9 +241,7 @@ function validateRelationships(configurations: readonly SyncConfiguration[]): vo
 }
 
 function validatePair(left: SyncConfiguration, right: SyncConfiguration): void {
-  if (left.id === right.id) {
-    throw new Error(`Duplicate repository pair: ${left.id}`);
-  }
+  if (left.id === right.id) throw new Error(`Duplicate repository pair: ${left.id}`);
   if (
     left.artifacts.namespace === right.artifacts.namespace &&
     left.artifactsBinding !== right.artifactsBinding
@@ -163,15 +259,18 @@ function validatePair(left: SyncConfiguration, right: SyncConfiguration): void {
     );
   }
   if (
-    allowsDirection(left.direction, "github-to-artifacts") &&
-    allowsDirection(right.direction, "github-to-artifacts") &&
-    githubKey(left.github) === githubKey(right.github)
+    left.provider === right.provider &&
+    allowsDirection(left.direction, "peer-to-artifacts") &&
+    allowsDirection(right.direction, "peer-to-artifacts") &&
+    peerKey(left) === peerKey(right)
   ) {
-    throw new Error(`Fan-out from GitHub repository ${githubSlug(left.github)} is not supported`);
+    throw new Error(
+      `Fan-out from ${providerName(left)} repository ${peerSlug(left)} is not supported`,
+    );
   }
   if (
-    allowsDirection(left.direction, "artifacts-to-github") &&
-    allowsDirection(right.direction, "artifacts-to-github") &&
+    allowsDirection(left.direction, "artifacts-to-peer") &&
+    allowsDirection(right.direction, "artifacts-to-peer") &&
     artifactsKey(left.artifacts) === artifactsKey(right.artifacts)
   ) {
     throw new Error(
@@ -180,16 +279,34 @@ function validatePair(left: SyncConfiguration, right: SyncConfiguration): void {
   }
 }
 
-function configurationId(github: GitHubRepository, artifacts: ArtifactsRepository): string {
-  return `github:${githubKey(github)}|artifacts:${artifactsKey(artifacts)}`;
+function configurationId(
+  provider: SyncConfiguration["provider"],
+  peer: string,
+  artifacts: ArtifactsRepository,
+): string {
+  return `${provider}:${peer}|artifacts:${artifactsKey(artifacts)}`;
+}
+
+function peerKey(configuration: SyncConfiguration): string {
+  return configuration.provider === "github"
+    ? githubKey(configuration.peer)
+    : originKey(configuration.peer);
 }
 
 function githubKey(repository: GitHubRepository): string {
-  return githubSlug(repository).toLowerCase();
+  return `${repository.owner}/${repository.repo}`.toLowerCase();
 }
 
-function githubSlug(repository: GitHubRepository): string {
-  return `${repository.owner}/${repository.repo}`;
+function originKey(repository: OriginRepository): string {
+  return `${repository.owner}/${repository.repo}`.toLowerCase();
+}
+
+function peerSlug(configuration: SyncConfiguration): string {
+  return `${configuration.peer.owner}/${configuration.peer.repo}`;
+}
+
+function providerName(configuration: SyncConfiguration): "GitHub" | "Origin" {
+  return configuration.provider === "github" ? "GitHub" : "Origin";
 }
 
 function artifactsKey(repository: ArtifactsRepository): string {
