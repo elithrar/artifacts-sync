@@ -1116,7 +1116,8 @@ packages:
     engines: {node: '>=0.8'}
     hasBin: true
 
-  cursor-origin-webhooks@0.0.1: {}
+  cursor-origin-webhooks@0.0.1:
+    resolution: {integrity: sha512-jovQ6p4q0q9TwM0I9b7xZwNFKzja+3t3RLJiywh1X8xDOyOaVnVQtMwe8WH/9iOOyn0HCkMV8idfTztyvgSb5Q==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
