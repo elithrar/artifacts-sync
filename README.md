@@ -132,16 +132,35 @@ An accepted delivery returns the Workflow instance ID:
 
 ### Cursor Origin credentials and webhooks
 
-Configure a native Cursor Origin repository with its app installation ID:
+Configure a native Cursor Origin repository with its app installation ID. For Origin to Artifacts,
+Origin's signed push webhook starts the sync:
 
 ```ts
-{
+export default syncRepos({
   origin: "elithrar/project",
   originInstallationId: "i_01...",
   artifacts: "project",
-  direction: "bidirectional",
-}
+  direction: "origin-to-artifacts",
+});
 ```
+
+For Artifacts to Origin, the `cf.artifacts.repo.pushed` event starts the sync:
+
+```ts
+export default syncRepos({
+  origin: "elithrar/project",
+  originInstallationId: "i_01...",
+  artifacts: "project",
+  direction: "artifacts-to-origin",
+});
+```
+
+Use `direction: "bidirectional"` to enable both paths. The ordered repositories and credentials are:
+
+| Direction             | Event source               | Git access                             |
+| --------------------- | -------------------------- | -------------------------------------- |
+| `origin-to-artifacts` | Origin `repository.pushed` | Origin read → Artifacts write          |
+| `artifacts-to-origin` | `cf.artifacts.repo.pushed` | Artifacts read → Origin read and write |
 
 Create an Origin App, subscribe it to `repository.pushed`, install it for the configured native Origin repositories, and set its webhook URL to:
 
@@ -159,6 +178,24 @@ wrangler secret put ORIGIN_APP_PRIVATE_KEY
 The app installation needs `repository:contents:read` when Origin is a source and both `repository:contents:read` and `repository:contents:write` when Origin is a destination. The Worker verifies Origin's Ed25519 webhook signature with Cursor's published signing keys; no webhook secret is required.
 
 Origin installation tokens are minted just in time, restricted to the configured repository and required scopes, and passed to Git over HTTPS without embedding them in the remote URL. Repositories mirrored into Origin from GitHub are not supported because Origin Apps cannot access them or receive their push webhooks; configure those repositories through `github` instead.
+
+The root package exports `OriginSyncReposOptions` and `SyncReposOptions` for extracted or generated
+configuration:
+
+```ts
+import { syncRepos, type SyncReposOptions } from "artifacts-sync";
+
+const pairs = [
+  {
+    origin: "elithrar/project",
+    originInstallationId: "i_01...",
+    artifacts: "project",
+    direction: "origin-to-artifacts",
+  },
+] satisfies readonly SyncReposOptions[];
+
+export default syncRepos(pairs);
+```
 
 ### Artifacts push events
 

@@ -6,6 +6,7 @@ import {
   findConfigurationForArtifacts,
   findConfigurationForGitHub,
   findConfigurationForOrigin,
+  selectSyncRepositories,
   type SyncReposOptions,
 } from "../src/configuration.js";
 
@@ -66,6 +67,38 @@ describe("syncRepos configuration", () => {
       registry.configurations[0],
     );
     expect(findConfigurationForArtifacts(registry, "default", "project")).toBeUndefined();
+  });
+
+  it("orders repositories correctly for both one-way Origin directions", () => {
+    const originToArtifactsRegistry = createConfigurationRegistry({
+      origin: "cursor/source",
+      originInstallationId: "installation-1",
+      artifacts: "destination",
+      direction: "origin-to-artifacts",
+    });
+    const artifactsToOriginRegistry = createConfigurationRegistry({
+      origin: "cursor/destination",
+      originInstallationId: "installation-1",
+      artifacts: "source",
+      direction: "artifacts-to-origin",
+    });
+    const originToArtifacts = originToArtifactsRegistry.configurations[0]!;
+    const artifactsToOrigin = artifactsToOriginRegistry.configurations[0]!;
+
+    expect(selectSyncRepositories(originToArtifacts, "peer")).toEqual([
+      originToArtifacts.peer,
+      originToArtifacts.artifacts,
+    ]);
+    expect(selectSyncRepositories(artifactsToOrigin, "artifacts")).toEqual([
+      artifactsToOrigin.artifacts,
+      artifactsToOrigin.peer,
+    ]);
+    expect(
+      findConfigurationForOrigin(originToArtifactsRegistry, "installation-1", "cursor", "source"),
+    ).toBe(originToArtifacts);
+    expect(findConfigurationForArtifacts(artifactsToOriginRegistry, "default", "source")).toBe(
+      artifactsToOrigin,
+    );
   });
 
   it("routes multiple providers and Artifacts namespaces", () => {

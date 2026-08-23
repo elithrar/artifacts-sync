@@ -5,7 +5,12 @@ import {
   parseOriginRepository,
 } from "./repositories.js";
 import { z } from "zod";
-import type { ArtifactsRepository, GitHubRepository, OriginRepository } from "./types.js";
+import type {
+  ArtifactsRepository,
+  GitHubRepository,
+  OriginRepository,
+  Repository,
+} from "./types.js";
 
 export type GitHubSyncDirection = "github-to-artifacts" | "artifacts-to-github" | "bidirectional";
 export type OriginSyncDirection = "origin-to-artifacts" | "artifacts-to-origin" | "bidirectional";
@@ -141,6 +146,24 @@ export function allowsDirection(
   required: Exclude<SyncDirection, "bidirectional">,
 ): boolean {
   return direction === "bidirectional" || direction === required;
+}
+
+/** @internal Selects the ordered repositories after a job's direction has been authorized. */
+export function selectSyncRepositories<Configuration extends SyncConfiguration>(
+  configuration: Configuration,
+  source: "peer",
+): readonly [Configuration["peer"], ArtifactsRepository];
+export function selectSyncRepositories<Configuration extends SyncConfiguration>(
+  configuration: Configuration,
+  source: "artifacts",
+): readonly [ArtifactsRepository, Configuration["peer"]];
+export function selectSyncRepositories(
+  configuration: SyncConfiguration,
+  source: "peer" | "artifacts",
+): readonly [Repository, Repository] {
+  return source === "peer"
+    ? [configuration.peer, configuration.artifacts]
+    : [configuration.artifacts, configuration.peer];
 }
 
 function validateConfiguration(options: SyncReposOptions): SyncConfiguration {

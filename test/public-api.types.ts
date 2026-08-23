@@ -1,4 +1,11 @@
-import { SyncCoordinator, SyncWorkflow, WorkspaceProxy, syncRepos } from "../src/index.js";
+import {
+  SyncCoordinator,
+  SyncWorkflow,
+  WorkspaceProxy,
+  syncRepos,
+  type OriginSyncReposOptions,
+  type SyncReposOptions,
+} from "../src/index.js";
 
 void SyncCoordinator;
 void SyncWorkflow;
@@ -9,6 +16,25 @@ syncRepos({
   artifacts: "project",
   direction: "bidirectional",
 });
+
+const originToArtifacts = {
+  origin: "cursor/project",
+  originInstallationId: "installation-1",
+  artifacts: "project",
+  direction: "origin-to-artifacts",
+} satisfies OriginSyncReposOptions;
+
+const extractedPairs = [
+  originToArtifacts,
+  {
+    origin: "cursor/another-project",
+    originInstallationId: "installation-1",
+    artifacts: "another-project",
+    direction: "artifacts-to-origin",
+  },
+] satisfies readonly SyncReposOptions[];
+
+syncRepos(extractedPairs);
 
 syncRepos({
   origin: "cursor/project",

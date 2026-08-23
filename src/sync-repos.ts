@@ -21,6 +21,7 @@ import {
   findConfigurationForArtifacts,
   findConfigurationForGitHub,
   findConfigurationForOrigin,
+  selectSyncRepositories,
   type GitHubSyncConfiguration,
   type OriginSyncConfiguration,
   type SyncConfiguration,
@@ -178,23 +179,26 @@ export class SyncCoordinator extends ContainerBase {
       const github = requireGitHubConfiguration(configured);
       requireDirection(github, "peer-to-artifacts");
       assertGitHubRepository(job.event, github);
+      const [source, destination] = selectSyncRepositories(github, "peer");
       const change = await inspectGitHubPush(job.event, {
         token: requiredSecret(this.env.GITHUB_TOKEN, "GITHUB_TOKEN"),
       });
-      return client.sync(github.peer, configured.artifacts, { change });
+      return client.sync(source, destination, { change });
     }
 
     if (job.kind === "origin") {
       const origin = requireOriginConfiguration(configured);
       requireDirection(origin, "peer-to-artifacts");
       assertOriginRepository(job.event, origin);
-      const source = { ...origin.peer, repositoryId: job.event.repository.id };
-      return client.sync(source, origin.artifacts, { change: observeOriginPush(job.event) });
+      const [configuredSource, destination] = selectSyncRepositories(origin, "peer");
+      const source = { ...configuredSource, repositoryId: job.event.repository.id };
+      return client.sync(source, destination, { change: observeOriginPush(job.event) });
     }
 
     requireDirection(configured, "artifacts-to-peer");
     assertArtifactsRepository(job.event, configured);
-    return client.sync(configured.artifacts, configured.peer, {
+    const [source, destination] = selectSyncRepositories(configured, "artifacts");
+    return client.sync(source, destination, {
       change: observeArtifactsPush(job.event),
     });
   }
