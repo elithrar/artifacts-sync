@@ -162,11 +162,16 @@ Use `direction: "bidirectional"` to enable both paths. The ordered repositories 
 | `origin-to-artifacts` | Origin `repository.pushed` | Origin read → Artifacts write          |
 | `artifacts-to-origin` | `cf.artifacts.repo.pushed` | Artifacts read → Origin read and write |
 
-Create an Origin App, subscribe it to `repository.pushed`, install it for the configured native Origin repositories, and set its webhook URL to:
+Create an Origin App and install it for the configured native Origin repositories. When Origin is a
+source (`origin-to-artifacts` or `bidirectional`), subscribe the app to `repository.pushed` and set
+its webhook URL to:
 
 ```text
 https://<worker>/webhooks/origin
 ```
+
+An `artifacts-to-origin` pair does not need an Origin webhook subscription. It still needs the
+installed app and its credentials so the Worker can mint a repository-scoped destination token.
 
 Store the app ID and its Ed25519 PKCS#8 private signing key as Worker secrets:
 

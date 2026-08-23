@@ -95,4 +95,8 @@ An accepted GitHub delivery returns HTTP `202` with the pair-specific Workflow I
 
 Duplicate GitHub deliveries reuse the same pair-specific ID and do not create another Workflow instance.
 
-For Origin, store `ORIGIN_APP_ID` and the app's PKCS#8 `ORIGIN_APP_PRIVATE_KEY` as Worker secrets. Subscribe the Origin App to `repository.pushed`, grant the installation contents read/write scopes, and send deliveries to `https://<worker>/webhooks/origin`. Origin delivery IDs use the same pair-specific Workflow deduplication.
+For Origin, store `ORIGIN_APP_ID` and the app's PKCS#8 `ORIGIN_APP_PRIVATE_KEY` as Worker secrets.
+Grant the installation the scopes required by its configured direction. Subscribe the Origin App to
+`repository.pushed` and send deliveries to `https://<worker>/webhooks/origin` only for
+`origin-to-artifacts` or `bidirectional` pairs. Origin delivery IDs use the same pair-specific
+Workflow deduplication.
