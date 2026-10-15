@@ -1,6 +1,6 @@
 {
   "name": "artifacts-sync",
-  "version": "0.0.2",
+  "version": "0.0.4",
   "description": "Event-driven Git synchronization between GitHub or Cursor Origin and Cloudflare Artifacts",
   "license": "Apache-2.0",
   "repository": {
@@ -37,21 +37,21 @@
     "types:example": "wrangler types --include-runtime false --config examples/cloudflare-worker/wrangler.jsonc examples/cloudflare-worker/worker-configuration.d.ts"
   },
   "dependencies": {
-    "@cloudflare/computer": "0.2.1",
+    "@cloudflare/computer": "0.5.1",
     "@platformatic/vfs": "^0.4.0",
     "cursor-origin-webhooks": "0.0.1",
-    "isomorphic-git": "1.34.1",
-    "zod": "4.4.3"
+    "isomorphic-git": "1.41.9",
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260818.1",
-    "@oxlint/plugins": "1.78.0",
-    "oxfmt": "0.63.0",
-    "oxlint": "1.78.0",
+    "@cloudflare/workers-types": "5.20260921.1",
+    "@oxlint/plugins": "1.80.0",
+    "oxfmt": "0.65.0",
+    "oxlint": "1.80.0",
     "oxlint-tsgolint": "7.0.2001",
     "typescript": "7.0.2",
-    "vitest": "4.1.10",
-    "wrangler": "4.123.0"
+    "vitest": "4.1.11",
+    "wrangler": "4.127.0"
   },
   "engines": {
     "node": ">=22"
