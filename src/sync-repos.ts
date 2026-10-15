@@ -1,8 +1,8 @@
-import { type DurableObjectStorageLike, Workspace, WorkspaceProxy } from "@cloudflare/computer";
+import { Workspace, WorkspaceProxy } from "@cloudflare/computer";
 import {
-  CloudflareContainerBackend,
-  withWorkspaceContainer,
-} from "@cloudflare/computer/backends/container";
+  LegacyContainerBackend,
+  withLegacyWorkspaceContainer,
+} from "@cloudflare/computer/backends/container-legacy";
 import { createGitClient } from "@cloudflare/computer/git";
 import {
   DurableObject,
@@ -94,17 +94,17 @@ let configurationRegistry: SyncConfigurationRegistry | undefined;
 
 class SyncCoordinatorBase extends DurableObject<SyncRuntimeEnv> {}
 
-const ContainerBase = withWorkspaceContainer(SyncCoordinatorBase);
+const ContainerBase = withLegacyWorkspaceContainer(SyncCoordinatorBase);
 
 export class SyncCoordinator extends ContainerBase {
-  readonly #backend: CloudflareContainerBackend;
+  readonly #backend: LegacyContainerBackend;
   readonly #workspace: Workspace;
   #tail: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: SyncRuntimeEnv) {
     super(ctx, env);
     requireConfigurationRegistry();
-    this.#backend = new CloudflareContainerBackend({
+    this.#backend = new LegacyContainerBackend({
       container: () => this,
       workspace: {
         binding: "SYNC_COORDINATOR",
@@ -114,10 +114,7 @@ export class SyncCoordinator extends ContainerBase {
     });
     try {
       this.#workspace = new Workspace({
-        // SAFETY: Computer only uses the Durable Object storage, sync, and SQL surface.
-        // Cloudflare's generic SQL row signature is wider than Computer's local interface.
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-        storage: this.ctx.storage as DurableObjectStorageLike,
+        storage: this.ctx.storage,
         git: createGitClient(),
         backends: [this.#backend],
       });

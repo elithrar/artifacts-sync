@@ -1,6 +1,6 @@
 {
   "name": "artifacts-sync",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Size-aware Git synchronization between GitHub and Cloudflare Artifacts",
   "license": "Apache-2.0",
   "repository": {
@@ -37,13 +37,13 @@
     "types:example": "wrangler types --include-runtime false --config examples/cloudflare-worker/wrangler.jsonc examples/cloudflare-worker/worker-configuration.d.ts"
   },
   "dependencies": {
-    "@cloudflare/computer": "0.2.1",
+    "@cloudflare/computer": "0.5.1",
     "@platformatic/vfs": "^0.4.0",
     "isomorphic-git": "1.41.9",
-    "zod": "4.4.3"
+    "zod": "4.6.7"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20260827.1",
+    "@cloudflare/workers-types": "5.20260921.1",
     "@oxlint/plugins": "1.80.0",
     "oxfmt": "0.65.0",
     "oxlint": "1.80.0",
