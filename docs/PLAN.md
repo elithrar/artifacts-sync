@@ -2,7 +2,7 @@
 
 ## Goal
 
-Synchronize pushed Git refs between GitHub and Cloudflare Artifacts with a small, deployment-oriented API:
+Synchronize pushed Git refs between GitHub or Cursor Origin and Cloudflare Artifacts with a small, deployment-oriented API. Artifacts is always one side of every pair:
 
 ```ts
 export default syncRepos({
@@ -17,11 +17,13 @@ One Worker can configure multiple independent repository pairs. Bidirectional pa
 ## Decisions
 
 - Accept plain repository strings and validate them during module initialization. Keep normalized repository types internal.
+- Accept exactly one peer provider (`github` or `origin`) per Artifacts pair. Do not expose arbitrary provider-to-provider graphs.
 - Accept one pair or an array of pairs.
 - Treat `namespace/repo` as the stable Artifacts identity. A bare repository name means `default/repo`.
 - Default the `default` namespace to the `ARTIFACTS` binding. Require an explicit `artifactsBinding` for other namespaces.
 - Reject duplicate pairs, conflicting namespace bindings, and fan-out from a source repository.
 - Synchronize only refs named by a push. Full repository mirroring is not part of the public API.
+- Reject a capped Origin atomic push without synchronizing any refs; never report partial success or infer authority over omitted refs. Never poll for repository changes or missed deliveries.
 - Read source and destination refs before executing. Drop stale events whose source ref has moved and return a no-op when the destination already equals the triggering object.
 - Treat the source of a current push event as authoritative. Verify its ref again in the native-Git executor, then protect forced, ancestry-unknown, and deletion updates with `--force-with-lease` against the destination object observed for that attempt. A lease failure retries the full observation within the Workflow retry limit; an event whose source has since moved becomes a no-op.
 - Use a persistent `@cloudflare/computer` Workspace and its isomorphic-git client only for bounded changes.
@@ -47,11 +49,11 @@ GitHub push inspection uses the Compare API. It accepts a patch estimate only wh
 ## Runtime topology
 
 1. The module initializes an immutable registry of validated repository pairs.
-2. The returned Worker verifies GitHub webhooks and resolves `repository.full_name` to one pair.
+2. The returned Worker verifies GitHub or Origin webhooks and resolves the authenticated repository identity to one pair.
 3. Cloudflare sends `cf.artifacts.repo.pushed` events directly to the exported Workflow, which resolves `source.namespace` and `source.repoName` to one pair.
 4. Each routed job carries the stable pair ID. Unconfigured Artifacts events return a no-op result.
 5. A Durable Object named for that pair serializes both directions and owns its Computer Workspace.
-6. The coordinator selects the Artifacts namespace binding configured for the pair and builds the internal repository resolver.
+6. The coordinator selects the Artifacts namespace binding configured for the pair and builds the internal peer resolver. Origin credentials are short-lived, repository-scoped installation tokens minted with the configured app key.
 7. The sync engine confirms source refs still match the event, reads destination refs, plans the operation, and executes through the Workspace or container.
 
 One Durable Object per pair prevents opposite directions from running concurrently without creating contention between unrelated pairs. Computer maintains a separate ordered cache for each direction inside that coordinator.
@@ -80,7 +82,7 @@ export default syncRepos([
 
 The root package exposes `syncRepos` and the three Cloudflare runtime classes required by Wrangler. Repository constructors, event schemas, planners, resolvers, executors, and the sync client remain implementation details.
 
-`direction` accepts `"github-to-artifacts"`, `"artifacts-to-github"`, or `"bidirectional"`.
+GitHub directions are `"github-to-artifacts"`, `"artifacts-to-github"`, or `"bidirectional"`. Origin directions are `"origin-to-artifacts"`, `"artifacts-to-origin"`, or `"bidirectional"`.
 
 ## Deployment configuration
 
@@ -88,6 +90,7 @@ The root package exposes `syncRepos` and the three Cloudflare runtime classes re
 - `ARTIFACTS` is the default binding for the `default` namespace.
 - One `GITHUB_TOKEN` must cover all configured GitHub repositories.
 - GitHub repositories use one `GITHUB_WEBHOOK_SECRET` and send pushes to `/webhooks/github`.
+- Origin repositories use one Origin App, `ORIGIN_APP_ID`, and `ORIGIN_APP_PRIVATE_KEY`. Native Origin repositories send signed `repository.pushed` deliveries to `/webhooks/origin`.
 - Artifacts push event filters target the shared Workflow and carry namespace and repository identity in the event.
 - `SYNC_COORDINATOR` and `SYNC_WORKFLOW` remain conventional binding names.
 
@@ -103,3 +106,6 @@ The root package exposes `syncRepos` and the three Cloudflare runtime classes re
 ## Currently unsupported
 
 - Fan-out from one source repository to multiple destinations.
+- GitHub-to-Origin pairs that omit Artifacts.
+- Repositories mirrored into Origin from GitHub, because Origin Apps cannot access them or receive their push webhooks.
+- Scheduled polling or automatic webhook-delivery scans.

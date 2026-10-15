@@ -9,6 +9,15 @@ export interface GitHubRepository {
   readonly repo: string;
 }
 
+export interface OriginRepository {
+  readonly kind: "origin";
+  readonly owner: string;
+  readonly repo: string;
+  readonly installationId: string;
+  /** Stable Origin repository ID, when supplied by an authenticated webhook. */
+  readonly repositoryId?: string;
+}
+
 export interface ArtifactsRepository {
   readonly kind: "artifacts";
   readonly namespace: string;
@@ -22,7 +31,7 @@ export interface GitRepository {
   readonly authorization?: string;
 }
 
-export type Repository = GitHubRepository | ArtifactsRepository | GitRepository;
+export type Repository = GitHubRepository | OriginRepository | ArtifactsRepository | GitRepository;
 
 export interface ResolvedRepository {
   readonly identity: string;

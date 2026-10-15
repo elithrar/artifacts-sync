@@ -1,8 +1,8 @@
 # artifacts-sync
 
-`artifacts-sync` keeps GitHub and Cloudflare Artifacts repositories synchronized after either repository receives a push. One Worker can manage multiple independent repository pairs.
+`artifacts-sync` keeps GitHub or Cursor Origin repositories synchronized with Cloudflare Artifacts after either repository receives a push. Every pair contains one Artifacts repository and one GitHub or native Origin repository. One Worker can manage multiple independent pairs.
 
-The library validates GitHub webhooks and Artifacts events, starts durable Workflows, serializes each pair through its own Durable Object, and chooses between a persistent Computer Workspace and native Git in a Computer container.
+The library validates provider webhooks and Artifacts events, starts durable Workflows, serializes each pair through its own Durable Object, and chooses between a persistent Computer Workspace and native Git in a Computer container. Synchronization is entirely event-driven; it does not poll repositories or webhook-delivery APIs.
 
 ## Installation
 
@@ -48,13 +48,21 @@ export default syncRepos([
 ]);
 ```
 
-`direction` accepts:
+GitHub pair `direction` accepts:
 
 - `"github-to-artifacts"`
 - `"artifacts-to-github"`
 - `"bidirectional"`
 
+Origin pair `direction` accepts:
+
+- `"origin-to-artifacts"`
+- `"artifacts-to-origin"`
+- `"bidirectional"`
+
 Each configured source repository must be unique in its enabled direction. Configuration fails during Worker startup when it contains a duplicate pair, conflicting namespace bindings, or fan-out.
+
+Every pair must contain `artifacts` and exactly one of `github` or `origin`. GitHub-to-Origin synchronization is intentionally not supported.
 
 ### Artifacts namespaces and bindings
 
@@ -122,6 +130,78 @@ An accepted delivery returns the Workflow instance ID:
 
 `GITHUB_WEBHOOK_SECRET` is unnecessary when no configuration accepts GitHub-originated pushes. `GITHUB_TOKEN` remains necessary when a sync writes to or inspects GitHub.
 
+### Cursor Origin credentials and webhooks
+
+Configure a native Cursor Origin repository with its app installation ID. For Origin to Artifacts,
+Origin's signed push webhook starts the sync:
+
+```ts
+export default syncRepos({
+  origin: "elithrar/project",
+  originInstallationId: "i_01...",
+  artifacts: "project",
+  direction: "origin-to-artifacts",
+});
+```
+
+For Artifacts to Origin, the `cf.artifacts.repo.pushed` event starts the sync:
+
+```ts
+export default syncRepos({
+  origin: "elithrar/project",
+  originInstallationId: "i_01...",
+  artifacts: "project",
+  direction: "artifacts-to-origin",
+});
+```
+
+Use `direction: "bidirectional"` to enable both paths. The ordered repositories and credentials are:
+
+| Direction             | Event source               | Git access                             |
+| --------------------- | -------------------------- | -------------------------------------- |
+| `origin-to-artifacts` | Origin `repository.pushed` | Origin read → Artifacts write          |
+| `artifacts-to-origin` | `cf.artifacts.repo.pushed` | Artifacts read → Origin read and write |
+
+Create an Origin App and install it for the configured native Origin repositories. When Origin is a
+source (`origin-to-artifacts` or `bidirectional`), subscribe the app to `repository.pushed` and set
+its webhook URL to:
+
+```text
+https://<worker>/webhooks/origin
+```
+
+An `artifacts-to-origin` pair does not need an Origin webhook subscription. It still needs the
+installed app and its credentials so the Worker can mint a repository-scoped destination token.
+
+Store the app ID and its Ed25519 PKCS#8 private signing key as Worker secrets:
+
+```sh
+wrangler secret put ORIGIN_APP_ID
+wrangler secret put ORIGIN_APP_PRIVATE_KEY
+```
+
+The app installation needs `repository:contents:read` when Origin is a source and both `repository:contents:read` and `repository:contents:write` when Origin is a destination. The Worker verifies Origin's Ed25519 webhook signature with Cursor's published signing keys; no webhook secret is required.
+
+Origin installation tokens are minted just in time, restricted to the configured repository and required scopes, and passed to Git over HTTPS without embedding them in the remote URL. Repositories mirrored into Origin from GitHub are not supported because Origin Apps cannot access them or receive their push webhooks; configure those repositories through `github` instead.
+
+The root package exports `OriginSyncReposOptions` and `SyncReposOptions` for extracted or generated
+configuration:
+
+```ts
+import { syncRepos, type SyncReposOptions } from "artifacts-sync";
+
+const pairs = [
+  {
+    origin: "elithrar/project",
+    originInstallationId: "i_01...",
+    artifacts: "project",
+    direction: "origin-to-artifacts",
+  },
+] satisfies readonly SyncReposOptions[];
+
+export default syncRepos(pairs);
+```
+
 ### Artifacts push events
 
 Point `cf.artifacts.repo.pushed` events at the configured Workflow. Add one filtered trigger per repository:
@@ -163,7 +243,8 @@ Point `cf.artifacts.repo.pushed` events at the configured Workflow. Add one filt
 
 You can omit the filter to deliver every Artifacts push event in the account. Events for unconfigured repositories return a no-op Workflow result rather than retrying.
 
-Remove Artifacts event triggers when every pair is `github-to-artifacts`.
+Remove Artifacts event triggers when every pair is `github-to-artifacts` or
+`origin-to-artifacts`.
 
 ### Runtime bindings
 
@@ -209,9 +290,11 @@ The Workspace path requires a complete, non-forced SHA-1 update within all four 
 
 Missing evidence selects the native-Git container. Current Artifacts push events provide commit counts but not enough evidence to prove a small fast-forward transfer, so Artifacts-originated updates use the container by default.
 
-Before execution, the library confirms that each source ref still matches the event and reads the destination ref. The native-Git path checks the source again and uses `--force-with-lease` against the observed destination for forced updates, ancestry-unknown Artifacts updates, and deletions. A destination change during execution fails the lease and triggers a Workflow retry with fresh observations; repeated contention can exhaust the retry limit and fail the instance. A source event superseded in the meantime becomes a no-op. Matching destination refs suppress events generated by bidirectional synchronization.
+Before execution, the library confirms that each source ref still matches the event and reads the destination ref. The native-Git path checks the source again and uses `--force-with-lease` against the observed destination for forced updates, ancestry-unknown updates, and deletions. A destination change during execution fails the lease and triggers a Workflow retry with fresh observations; repeated contention can exhaust the retry limit and fail the instance. A source event superseded in the meantime becomes a no-op. Matching destination refs suppress events generated by bidirectional synchronization.
 
-For simultaneous pushes to both repositories, there is no reliable ordering shared by GitHub and Cloudflare. The first serialized attempt whose source remains current and whose destination lease succeeds wins; the reflected or superseded event becomes a no-op. This is synchronization, not commit or conflict merging.
+Origin push events can contain up to 100 ref updates. When `refUpdatesCount` says an atomic push was capped, the webhook returns `422` and synchronizes none of the push. It does not report partial success, guess which omitted refs changed, or turn the event into a destructive full mirror. Split the push into smaller updates and retry it, or reconcile it manually; there is no scheduled reconciliation or delivery polling.
+
+For simultaneous pushes to both repositories, there is no reliable ordering shared by providers. The first serialized attempt whose source remains current and whose destination lease succeeds wins; the reflected or superseded event becomes a no-op. This is synchronization, not commit or conflict merging.
 
 See [the design notes](./docs/PLAN.md) for the execution and conflict model.
 
@@ -226,3 +309,5 @@ Apache-2.0. See [LICENSE](./LICENSE).
 ## Currently unsupported
 
 - **Fan-out:** one source repository cannot sync to multiple destinations. `syncRepos` rejects duplicate outgoing source routes during configuration.
+- **GitHub-to-Origin pairs:** Artifacts must be one side of every pair.
+- **GitHub-mirrored Origin repositories:** Origin Apps cannot access these repositories; use the GitHub repository directly.
